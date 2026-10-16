@@ -3,36 +3,36 @@
 Run a container in an Intel TDX confidential VM on Google Cloud, and check what is running there before you hand it anything.
 
 ```console
-$ vcontainer run --session demo
-creating TDX confidential VM demo (c3-standard-4 in us-central1-a)
-waiting for http://34.135.164.96:7700 to boot and answer attestation
-session demo (34.135.164.96, us-central1-a): VERIFIED
+$ vcontainer run --session agent
+creating TDX confidential VM agent (c3-standard-4 in us-central1-a)
+waiting for http://34.28.55.190:7700 to boot and answer attestation
+session agent (34.28.55.190, us-central1-a): VERIFIED
   ✓ Intel TDX quote: signature valid, TCB UpToDate (evaluation 20)
   ✓ fresh quote for our nonce; state Waiting
   ✓ TD attributes: debug off (0x10000000), XFAM 0x602e7
-  ✓ GCE instance 5127634889331185664 in us-central1-a (MROWNER)
+  ✓ GCE instance 1839456890140757969 in us-central1-a (MROWNER)
   ✓ firmware: MRTD c1ee9c16e3afc506… endorsed by Google (svn 2)
   ✓ host: a Google Cloud machine (PPID in Google's host registry)
-  ✓ boot image: vcontainer-77604b596a07 (kernel+initramfs+cmdline+/init, Authenticode 77604b596a07d9de…)
+  ✓ boot image: kernel+initramfs+cmdline+/init with Authenticode b0a1735c…7e33db0 (release vcontainer-b0a1735ce42a, commit 55d07e68…)
   ✓ ledger: fresh boot key, our owner key
   state: Waiting
 
-$ vcontainer deploy --session demo us-central1-docker.pkg.dev/agentlockbox/vcontainer/openrouter-agent:v1 \
+$ vcontainer deploy --session agent us-central1-docker.pkg.dev/agentlockbox/vcontainer/openrouter-agent:v1 \
     -p 8080 --secret OPENROUTER_API_KEY=@openrouter.key
 launching us-central1-docker.pkg.dev/agentlockbox/vcontainer/openrouter-agent@sha256:acdf834c…
 launch measured and committed; the VM is pulling the image
-session demo (34.135.164.96, us-central1-a): VERIFIED
+session agent (34.28.55.190, us-central1-a): VERIFIED
   ...
   ✓ launch measured before pull: us-central1-docker.pkg.dev/.../openrouter-agent@sha256:acdf834c…
   ✓ container sealed: manifest sha256:b38d15a0…
   state: Running
-  port 8080: http://34.135.164.96:8080
+  port 8080: http://34.28.55.190:8080
 
-$ curl -X POST http://34.135.164.96:8080/chat -d '{"message":"In one sentence: what does an Intel TDX quote prove?"}'
-{"model": "openai/gpt-4o-mini", "reply": "An Intel TDX quote proves ..."}
+$ curl -X POST http://34.28.55.190:8080/chat -d '{"message":"Reply with exactly: vcontainer works"}'
+{"model": "openai/gpt-4o-mini", "reply": "vcontainer works"}
 ```
 
-The whole run took about 36 s to boot and verify and 17 s to deploy, on a c3-standard-4.
+Booting and verifying took about 36 s; deploying took about 20 s (c3-standard-4).
 
 ## What you get
 
@@ -40,7 +40,7 @@ The whole run took about 36 s to boot and verify and 17 s to deploy, on a c3-sta
 - **Verify before you send.** A new session waits empty. `vcontainer` checks Intel's quote, Google's signed firmware, the exact boot image and the session's ledger. Only then does it send the container's configuration, signed by your key. It verifies again that the VM recorded that configuration, and only then lets the VM pull the image. Everything that ran before the pull is covered by the quote. See [the whitepaper](docs/whitepaper.md).
 - **Secrets only to the verified VM.** `--secret` values are encrypted (HPKE) to a key created inside the VM at boot. They appear as files in `/run/secrets`, so they never touch instance metadata, the disk or the launch configuration. The same mechanism carries the registry token for a private image.
 - **Third-party verification.** `vcontainer verify --export-policy p.json` writes everything another person needs. With it they run `vcontainer verify --url http://IP:7700 --policy p.json`; they do not need your key or your cloud account.
-- **Small.** About 2,600 lines of Rust (protocol 650, guest 960, CLI 950), 200 lines of shell, and a 106-option kernel configuration.
+- **Small.** About 2,700 lines of Rust (protocol 680, guest 980, CLI 1,000), 170 lines of shell, and a 109-option kernel configuration.
 
 ## Quick start
 
@@ -50,10 +50,12 @@ One-time setup. This builds and publishes the boot image (about 10 minutes, most
 
 ```sh
 scripts/build-init.sh                   # /init, static musl, in a pinned build container
-scripts/build-image.sh                  # kernel + initramfs + /init -> out/BOOTX64.EFI, out/disk.raw
+scripts/build-image.sh                  # downloads Linux 6.18.57 (sha256-checked); builds out/BOOTX64.EFI, out/disk.raw
 cargo install --path crates/cli         # the vcontainer CLI
 vcontainer publish                      # upload, create the GCE image, record expected measurements
 ```
+
+Both build scripts refuse a dirty tree (pass `--dev` while hacking). A release is therefore always a commit that anyone can rebuild byte for byte. `out/build-info.json` names the commit, and `verify` prints it.
 
 Then:
 
@@ -61,6 +63,7 @@ Then:
 vcontainer run --session demo                       # create (or reconnect to) a TDX VM and verify it
 vcontainer deploy --session demo IMAGE -p 8080 \
     --secret API_KEY=@./key.txt -e MODEL=x -- cmd args   # 'pull' is an alias
+vcontainer deploy --session demo --resume           # finish a deploy interrupted after its launch
 vcontainer verify --session demo                    # verify again at any time
 vcontainer logs --session demo                      # serial console: kernel, /init, container output
 vcontainer ls
@@ -109,7 +112,7 @@ The host is otherwise untrusted: it controls the network, instance metadata, the
 crates/core    protocol: ledger, evidence, launch/commit, HPKE, Ed25519, OCI registry client
 crates/init    guest PID 1: boot, RTMR3, quotes, API, pull/unpack, start the container
 crates/cli     vcontainer: run, deploy, verify, ls, logs, rm, measure, publish
-image/         kernel configuration (allnoconfig + 106 options) and its checks
+image/         kernel configuration (allnoconfig + 109 options) and its checks
 scripts/       build-init.sh, build-image.sh, qemu-boot.sh
 tools/         tdx-probe (hardware probe used to validate the platform), predict-rtmr1.py
 examples/      openrouter-agent
@@ -118,8 +121,10 @@ docs/          whitepaper.md
 
 ## Status
 
-Version 0.1, Intel TDX on Google Cloud C3 only. It works end to end on real hardware. The code was reviewed by Codex and an adversarial multi-agent review.
+Version 0.1, Intel TDX on Google Cloud C3 only. It works end to end on real hardware. The current release (commit 55d07e6) was rebuilt from scratch and matched byte for byte.
+
+The code had three Codex review rounds and one adversarial multi-agent review (four lenses, each finding checked by a skeptic). Every confirmed finding was fixed; [docs/whitepaper.md](docs/whitepaper.md) §8 summarizes them.
 
 There is no SEV-SNP support. On Google Cloud's generally available SNP machines, the kernel can be identified only through a vTPM that the host runs. An SVSM-based mode is in alpha. See [docs/design](docs/design/) for the analysis.
 
-One container runs per session, and its root filesystem lives in RAM. After host maintenance, a session reboots empty; run `vcontainer deploy` again.
+One container runs per session, and its root filesystem lives in RAM. After host maintenance the VM reboots empty. Run `vcontainer run --session NAME` (it picks up a new IP if there is one), then `vcontainer deploy`. Until then, `verify` reports that the session was not deployed again.
