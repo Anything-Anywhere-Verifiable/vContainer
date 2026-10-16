@@ -1,4 +1,4 @@
-# vcontainer boot image
+# vContainer boot image
 
 One reproducible PE file, `BOOTX64.EFI` (a Linux 6.18.57 EFI-stub kernel with a
 built-in initramfs holding only `/init`, plus a built-in command line), on a

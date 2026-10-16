@@ -1,8 +1,27 @@
-# vcontainer
+# vContainer
 
-vcontainer runs a container in an Intel TDX confidential VM on Google Cloud. Before your image, secrets or data reach the VM, it proves to you exactly what the VM is running.
+**vContainer is a confidential container runtime built from as little code as possible.** It runs a container in a confidential VM. Before your image, secrets or data reach the VM, it proves to you exactly what the VM is running.
 
-The VM boots a single file: a Linux kernel with a built-in initramfs whose only program is a small static Rust `/init`. There is no bootloader, root disk, systemd or container runtime to trust. The file is built reproducibly, and its measurement is predicted offline.
+| Part | Size |
+|---|---|
+| Code we wrote that runs in the VM (`/init` and the protocol) | about 1,600 lines of Rust |
+| CLI and verifier, on your machine | about 1,000 lines of Rust |
+| Kernel configuration | `allnoconfig` plus 109 options |
+| Build scripts | about 200 lines of shell |
+
+The VM boots a single file: a Linux kernel with a built-in initramfs whose only program is `/init`. There is no bootloader, root disk, systemd or container runtime. Besides `/init`, the VM runs only the kernel and the libraries `/init` links (musl and crates such as rustls, hpke and tar). The file is built reproducibly, and its measurement is predicted offline.
+
+> [!NOTE]
+> **Intel TDX on Google Cloud is the demo platform, not part of the design.** The design needs three things from a platform:
+> - a measured boot;
+> - an append-only measurement register for the ledger;
+> - quotes that bind data chosen by the guest.
+>
+> TDX on Google Cloud C3 is the only platform implemented so far. Its platform-specific code is:
+> - the quote and register interface ([tdx.rs](crates/init/src/tdx.rs));
+> - instance metadata ([net.rs](crates/init/src/net.rs));
+> - the verifier's Intel and Google checks ([verify.rs](crates/cli/src/verify.rs), [endorse.rs](crates/cli/src/endorse.rs), [measure.rs](crates/cli/src/measure.rs));
+> - the `gcloud` calls ([gcp.rs](crates/cli/src/gcp.rs)).
 
 ```sh
 vcontainer run --session demo                      # boot a TDX VM and verify it
@@ -11,6 +30,8 @@ vcontainer verify --session demo                   # verify again at any time
 ```
 
 ## How it works
+
+The steps below are as they run on the demo platform.
 
 1. **Boot and measure.** `run` creates a C3 TDX VM. Before any network I/O, `/init` records a fresh boot key in the TDX register RTMR3. It then records your public key, read from instance metadata.
 2. **Verify the empty VM.** The CLI fetches a quote over a fresh nonce. It checks Intel's signature and TCB status, Google's signed firmware, the exact boot image, and the RTMR3 ledger.
@@ -91,7 +112,7 @@ Any linux/amd64 OCI or Docker image works. A tag is resolved to a digest before 
 
 ## Trust
 
-vcontainer trusts:
+On the demo platform, vContainer trusts:
 - Intel: the CPU, the TDX module and the quoting enclave;
 - Google's TDX firmware, as checked against Google's signed launch endorsement;
 - the host's default configuration (ACPI tables and the KVM paravirtual interface), which is measured but not appraised;
@@ -101,7 +122,7 @@ The host is otherwise untrusted: it controls the network, instance metadata, the
 
 ## Status
 
-Version 0.1 supports Intel TDX on Google Cloud C3 only. It works end to end on real hardware. The release built from commit 55d07e6 was rebuilt from scratch and matched byte for byte.
+Version 0.1 implements the demo platform, Intel TDX on Google Cloud C3, and works end to end on real hardware. The release built from commit 55d07e6 was rebuilt from scratch and matched byte for byte.
 
 The code had three Codex review rounds and one adversarial multi-agent review. Every confirmed finding was fixed; [whitepaper §8](docs/whitepaper.md#8-security-analysis) summarizes them.
 
@@ -114,7 +135,7 @@ Limits:
 
 - [docs/whitepaper.md](docs/whitepaper.md) presents the design top-down: what a PASS establishes, what it does not, and why.
 - [image/README-image.md](image/README-image.md) covers the kernel configuration and the platform facts measured on real C3 hardware.
-- Code, about 2,600 lines of Rust:
+- Code:
   - [crates/core](crates/core): the protocol and the OCI client;
   - [crates/init](crates/init): the guest `/init`;
   - [crates/cli](crates/cli): the CLI and verifier.
