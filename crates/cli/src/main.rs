@@ -261,7 +261,7 @@ fn report(s: &Session, v: &verify::Verified) {
         print!(" (exit code {code})");
     }
     if let Some(e) = &st.error {
-        print!(" — {e}");
+        print!(" — {}", verify::untrusted(e.as_bytes()));
     }
     println!();
 }

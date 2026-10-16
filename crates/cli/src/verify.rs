@@ -28,9 +28,11 @@ pub fn nonce() -> [u8; 32] {
     crypto::random32()
 }
 
-/// Text from the network, made safe to print (no control characters).
-fn untrusted(b: &[u8]) -> String {
-    String::from_utf8_lossy(b).chars().filter(|c| !c.is_control()).take(300).collect()
+/// Text from the network, made safe to print (no control characters, no
+/// bidi controls that reorder what the terminal shows).
+pub(crate) fn untrusted(b: &[u8]) -> String {
+    let bidi = |c: char| matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
+    String::from_utf8_lossy(b).chars().filter(|&c| !c.is_control() && !bidi(c)).take(300).collect()
 }
 
 pub fn fetch_evidence(url: &str, nonce: &[u8; 32]) -> Result<Evidence> {
@@ -62,7 +64,7 @@ pub fn post(url: &str, path: &str, body: &impl serde::Serialize) -> Result<()> {
 
 pub fn verify(ev: &Evidence, nonce: &[u8; 32], policy: &Policy) -> Result<Verified> {
     let mut claims = Vec::new();
-    ensure!(ev.v == 1 && ev.tee == "tdx" && policy.tee == "tdx", "unsupported evidence (tee {})", ev.tee);
+    ensure!(ev.v == 1 && ev.tee == "tdx" && policy.tee == "tdx", "unsupported evidence (tee {})", untrusted(ev.tee.as_bytes()));
 
     // 1. Intel: quote signature, certificate chain and TCB status.
     let collateral = tokio::runtime::Builder::new_current_thread()
@@ -97,6 +99,8 @@ pub fn verify(ev: &Evidence, nonce: &[u8; 32], policy: &Policy) -> Result<Verifi
         let pzid = format!("{{\"instanceId\":{},\"numericalProjectId\":{},\"zone\":{}}}", i.id, i.project_number, serde_json::to_string(&i.zone)?);
         ensure!(td.mr_owner[..] == Sha384::digest(pzid.as_bytes())[..], "MROWNER is not GCE instance {} in {}", i.id, i.zone);
         claims.push(format!("GCE instance {} in {} (MROWNER)", i.id, i.zone));
+    } else {
+        claims.push("GCE instance: not checked (the policy names no instance)".into());
     }
 
     // 4. Firmware: Google-signed launch endorsement for this MRTD.

@@ -26,7 +26,8 @@ pub struct Inner {
 pub struct App {
     pub boot: BootInfo,
     owner: crypto::VerifyingKey,
-    hpke_sk: HpkeSecret,
+    /// Dropped once a launch is measured; nothing is opened after that.
+    hpke_sk: Mutex<Option<HpkeSecret>>,
     ccel: Vec<u8>,
     pub inner: Mutex<Inner>,
 }
@@ -53,7 +54,7 @@ pub fn extend(inner: &mut Inner, event: Event) -> Result<()> {
 impl App {
     pub fn new(boot: BootInfo, owner: crypto::VerifyingKey, hpke_sk: HpkeSecret, ccel: Vec<u8>, ledger: Vec<Event>) -> Self {
         let status = Status { state: State::Waiting, exit_code: None, error: None };
-        App { boot, owner, hpke_sk, ccel, inner: Mutex::new(Inner { status, ledger, launch: None }) }
+        App { boot, owner, hpke_sk: Mutex::new(Some(hpke_sk)), ccel, inner: Mutex::new(Inner { status, ledger, launch: None }) }
     }
 
     pub fn evidence(&self, nonce: &[u8; 32]) -> Result<Evidence> {
@@ -78,7 +79,11 @@ impl App {
         crypto::verify(&self.owner, &msg, &req.sig).map_err(|e| ApiError(403, format!("{e:#}")))?;
         let config = Config::parse(&req.config)?;
         let secrets: Secrets = match &req.sealed {
-            Some(s) => serde_json::from_slice(&crypto::open(&self.hpke_sk, &self.boot.boot_id, s)?)?,
+            Some(s) => {
+                let sk = self.hpke_sk.lock().unwrap();
+                let sk = sk.as_ref().ok_or_else(|| conflict("this boot has already been launched"))?;
+                serde_json::from_slice(&crypto::open(sk, &self.boot.boot_id, s)?)?
+            }
             None => Secrets::default(),
         };
         let mut declared = config.secrets.clone();
@@ -87,8 +92,8 @@ impl App {
         if secrets.files.keys().cloned().collect::<Vec<_>>() != declared {
             return Err(ApiError(400, "sealed secrets do not match the declared names".into()));
         }
-        if config.registry_token && secrets.registry_token.is_none() {
-            return Err(ApiError(400, "registry_token is set but no token is sealed".into()));
+        if config.registry_token != secrets.registry_token.is_some() {
+            return Err(ApiError(400, "registry_token must be true exactly when a token is sealed".into()));
         }
 
         let mut g = self.inner.lock().unwrap();
@@ -106,6 +111,7 @@ impl App {
         extend(&mut g, Event::new(EV_LAUNCH, payload.clone())).map_err(|e| ApiError(500, format!("{e:#}")))?;
         g.status.state = State::Starting;
         g.launch = Some(Launch { payload, config, secrets });
+        *self.hpke_sk.lock().unwrap() = None;
         crate::sys::log("launch measured; waiting for commit");
         Ok(())
     }
