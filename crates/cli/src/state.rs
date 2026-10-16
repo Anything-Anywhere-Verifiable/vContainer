@@ -42,6 +42,9 @@ pub struct Policy {
     #[serde(default)]
     pub config: Option<String>,
     pub min_tcb_eval_num: u32,
+    /// Lowest acceptable security version of Google's TDX firmware.
+    #[serde(default)]
+    pub min_fw_svn: u64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -55,6 +58,10 @@ pub struct Session {
     pub source: String,
     #[serde(default)]
     pub ports: Vec<u16>,
+    /// A signed launch sent but not yet committed (base64 of the launch
+    /// event payload), so an interrupted deploy can be resumed.
+    #[serde(default)]
+    pub pending: Option<String>,
     pub policy: Policy,
 }
 

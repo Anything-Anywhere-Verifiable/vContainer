@@ -64,7 +64,8 @@ impl ImageRef {
 
     /// Whether this is a Google Artifact Registry / Container Registry host.
     pub fn is_google(&self) -> bool {
-        self.registry.ends_with("-docker.pkg.dev") || self.registry.ends_with("gcr.io")
+        let h = self.registry.as_str();
+        h == "gcr.io" || h.ends_with(".gcr.io") || (h.ends_with("-docker.pkg.dev") && !h.contains(['/', '@', ':']))
     }
 }
 
@@ -228,7 +229,8 @@ impl Registry {
         let mut resp = self.get(&url, MANIFEST_ACCEPT)?;
         let body = resp.body_mut().with_config().limit(MAX_MANIFEST).read_to_vec()?;
         let digest = sha256_digest(&body);
-        if reference.starts_with("sha256:") {
+        // A tag has no ':'; anything else is a digest and must be ours.
+        if reference.contains(':') {
             ensure!(digest == reference, "manifest digest mismatch: wanted {reference}, got {digest}");
         }
         Ok((body, digest))
@@ -291,6 +293,8 @@ mod tests {
         assert_eq!(r.repo, "p/r/agent");
         assert_eq!(r.digest.as_deref(), Some(d.as_str()));
         assert!(r.is_google());
+        assert!(!ImageRef::parse("evilgcr.io/x/y:1").unwrap().is_google());
+        assert!(ImageRef::parse("us.gcr.io/x/y:1").unwrap().is_google());
         let r = ImageRef::parse("localhost:5000/x/y").unwrap();
         assert_eq!((r.registry.as_str(), r.repo.as_str(), r.tag.as_deref()), ("localhost:5000", "x/y", Some("latest")));
     }

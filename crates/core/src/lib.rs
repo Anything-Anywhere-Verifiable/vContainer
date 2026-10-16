@@ -39,7 +39,9 @@ impl State {
     pub fn ledger_len_ok(self, len: usize) -> bool {
         match self {
             State::Waiting => len == 2,
-            State::Starting | State::Pulling => len == 3,
+            State::Starting => len == 3,
+            // The exec event is appended just before the helper starts it.
+            State::Pulling => len == 3 || len == 4,
             State::Running | State::Exited => len == 4,
             State::Failed => len == 3 || len == 4,
         }
@@ -255,25 +257,27 @@ pub fn launch_message(boot: &BootInfo, issued_at: u64, config: &[u8], sealed: Op
     h.finalize().into()
 }
 
-/// Payload of the launch event: the config, then a hash of the sealed secrets.
-pub fn launch_payload(config: &[u8], sealed: Option<&Sealed>) -> Vec<u8> {
+/// Payload of the launch event: the config, a hash of the sealed secrets and
+/// the signed time, so the event identifies exactly one signed launch.
+pub fn launch_payload(config: &[u8], sealed: Option<&Sealed>, issued_at: u64) -> Vec<u8> {
     let mut v = config.to_vec();
     v.extend_from_slice(&sealed_hash(sealed));
+    v.extend_from_slice(&issued_at.to_le_bytes());
     v
 }
 
 /// The config bytes inside a launch event payload.
 pub fn launch_config(payload: &[u8]) -> Result<&[u8]> {
-    ensure!(payload.len() > 64, "launch event payload too short");
-    Ok(&payload[..payload.len() - 64])
+    ensure!(payload.len() > 72, "launch event payload too short");
+    Ok(&payload[..payload.len() - 72])
 }
 
-/// The message the owner signs to let a measured launch start pulling.
-pub fn commit_message(boot_id: &[u8; 16], config: &[u8]) -> [u8; 64] {
+/// The message the owner signs to let exactly this measured launch pull.
+pub fn commit_message(boot_id: &[u8; 16], launch_payload: &[u8]) -> [u8; 64] {
     let mut h = Sha512::new();
     h.update(b"vcontainer/v1/commit\0");
     h.update(boot_id);
-    h.update(Sha512::digest(config));
+    h.update(Sha512::digest(launch_payload));
     h.finalize().into()
 }
 
@@ -397,11 +401,10 @@ pub fn hex(b: &[u8]) -> String {
 }
 
 pub fn unhex(s: &str) -> Result<Vec<u8>> {
-    ensure!(s.len() % 2 == 0, "odd-length hex");
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).context("invalid hex"))
-        .collect()
+    let digit = |c: u8| (c as char).to_digit(16).map(|d| d as u8).context("invalid hex");
+    let b = s.as_bytes();
+    ensure!(b.len() % 2 == 0, "odd-length hex");
+    b.chunks(2).map(|p| Ok(digit(p[0])? << 4 | digit(p[1])?)).collect()
 }
 
 pub fn unhex_array<const N: usize>(s: &str) -> Result<[u8; N]> {

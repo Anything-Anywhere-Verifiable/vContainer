@@ -17,8 +17,8 @@ use x509_cert::der::{Decode, Encode};
 use x509_cert::Certificate;
 
 /// https://pki.goog/cloud_integrity/GCE-cc-tcb-root_1.crt
+/// (SHA-256 e876bc6978bf4f3da445f98a0a82363c8c0bae5a1fc033c6df65846a6cb0f18c)
 const ROOT: &[u8] = include_bytes!("GCE-cc-tcb-root_1.crt");
-const ROOT_SHA256: &str = "e876bc6978bf4f3da445f98a0a82363c8c0bae5a1fc033c6df65846a6cb0f18c";
 
 /// Checks that Google endorses `mrtd`; returns the firmware's security version.
 pub fn check_mrtd(mrtd: &[u8; 48]) -> Result<u64> {
@@ -29,8 +29,13 @@ pub fn check_mrtd(mrtd: &[u8; 48]) -> Result<u64> {
     let g = fields(golden)?;
     let signer = Certificate::from_der(get(&g, 4).context("no signer certificate")?)?;
 
-    ensure!(hex(&Sha256::digest(ROOT)) == ROOT_SHA256, "embedded root certificate is corrupt");
     let root = Certificate::from_der(ROOT)?;
+    let validity = &signer.tbs_certificate.validity;
+    let now = std::time::SystemTime::now();
+    ensure!(
+        validity.not_before.to_system_time() <= now && now <= validity.not_after.to_system_time(),
+        "the endorsement signer certificate is not valid now"
+    );
     let root_key = public_key(&root)?;
     pss_verify(&root_key, &signer.tbs_certificate.to_der()?, signer.signature.raw_bytes()).context("signer certificate is not signed by GCE-cc-tcb-root")?;
     pss_verify(&public_key(&signer)?, golden, signature).context("endorsement signature")?;
@@ -43,6 +48,16 @@ pub fn check_mrtd(mrtd: &[u8; 48]) -> Result<u64> {
         }
     }
     bail!("Google's endorsement does not list MRTD {}", hex(mrtd))
+}
+
+/// Checks that the quote's platform (PPID from Intel's PCK certificate) is a
+/// Google Cloud host, using Google's public host registry.
+pub fn check_host(ppid: &[u8]) -> Result<()> {
+    let url = format!("https://storage.googleapis.com/confidential-host-registry/{}", hex(ppid));
+    let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(30))).http_status_as_error(false).build().into();
+    let status = agent.get(&url).call()?.status();
+    ensure!(status == 200, "PPID {} is not in Google's host registry (HTTP {status})", hex(ppid));
+    Ok(())
 }
 
 fn fetch(mrtd: &[u8; 48]) -> Result<Vec<u8>> {

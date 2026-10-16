@@ -32,6 +32,9 @@ pub fn setup() -> Result<()> {
     ensure!(resolv.contains("nameserver"), "DHCP lease has no DNS server");
     fs::create_dir_all("/etc")?;
     fs::write("/etc/resolv.conf", &resolv)?;
+    // Kernel DHCP set the host-chosen name; use a constant one.
+    let name = b"vcontainer";
+    check(unsafe { libc::sethostname(name.as_ptr().cast(), name.len()) }, "sethostname")?;
     crate::sys::log(&format!("network: {dev} via {gw}"));
     Ok(())
 }
@@ -83,7 +86,13 @@ fn route(dev: &str, dst: Ipv4Addr, gw: Option<Ipv4Addr>) -> Result<()> {
     let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
     check(sock, "socket")?;
     let r = unsafe { libc::ioctl(sock, libc::SIOCADDRT as _, &rt) };
+    let exists = r < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EEXIST);
     unsafe { libc::close(sock) };
+    // In 10/8 the kernel guesses a classful netmask and may already have
+    // added the route itself.
+    if exists {
+        return Ok(());
+    }
     check(r, "SIOCADDRT")
 }
 

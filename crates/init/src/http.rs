@@ -23,13 +23,21 @@ pub fn serve(app: Arc<App>) -> Result<()> {
             active.fetch_sub(1, Ordering::SeqCst);
             continue;
         }
-        let (app, active) = (app.clone(), active.clone());
+        let (app, slot) = (app.clone(), Slot(active.clone()));
         std::thread::spawn(move || {
+            let _slot = slot; // released even if the handler panics
             let _ = handle(stream, &app);
-            active.fetch_sub(1, Ordering::SeqCst);
         });
     }
     Ok(())
+}
+
+struct Slot(Arc<AtomicUsize>);
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 fn handle(mut s: TcpStream, app: &Arc<App>) -> Result<()> {

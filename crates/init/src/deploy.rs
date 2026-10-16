@@ -5,7 +5,6 @@ use anyhow::{bail, ensure, Context, Result};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use vcontainer_core::registry::{ImageConfig, ImageRef, Manifest, Registry};
@@ -61,15 +60,13 @@ fn deploy(app: &Arc<App>) -> Result<()> {
 
     let rc = image_config.config;
     let (argv, env, cwd) = command(&config, &rc)?;
-    let (uid, gid, home) = user(config.user.as_deref().or(rc.user.as_deref()).unwrap_or(""))?;
-    let env = with_defaults(env, &home);
-    prepare_root(uid, gid, &files)?;
-
+    let user = config.user.clone().or(rc.user.clone()).unwrap_or_default();
     {
         let mut g = app.inner.lock().unwrap();
         extend(&mut g, Event::new(EV_EXEC, manifest_digest.into_bytes()))?;
     }
-    let spec = RunSpec { argv, env, cwd, uid, gid, serial: config.logs == Logs::Serial };
+    let resolv = fs::read_to_string("/etc/resolv.conf")?;
+    let spec = RunSpec { argv, env, cwd, user, files, resolv, serial: config.logs == Logs::Serial };
     start(app, &spec)
 }
 
@@ -105,67 +102,8 @@ fn command(c: &vcontainer_core::Config, rc: &vcontainer_core::registry::RunConfi
     Ok((argv, env, cwd))
 }
 
-fn with_defaults(mut env: Vec<String>, home: &str) -> Vec<String> {
-    let has = |env: &Vec<String>, k: &str| env.iter().any(|e| e.starts_with(&format!("{k}=")));
-    if !has(&env, "PATH") {
-        env.push("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into());
-    }
-    if !has(&env, "HOME") {
-        env.push(format!("HOME={home}"));
-    }
-    if !has(&env, "HOSTNAME") {
-        env.push("HOSTNAME=vcontainer".into());
-    }
-    env
-}
 
-/// Resolves `user[:group]` against the image's /etc/passwd and /etc/group.
-fn user(spec: &str) -> Result<(u32, u32, String)> {
-    let read = |f: &str| fs::read_to_string(format!("{ROOT}/etc/{f}")).unwrap_or_default();
-    let (passwd, group) = (read("passwd"), read("group"));
-    let (u, g) = spec.split_once(':').map_or((spec, None), |(u, g)| (u, Some(g)));
-    let entry = passwd.lines().map(|l| l.split(':').collect::<Vec<_>>()).find(|f| {
-        f.len() >= 6 && (f[0] == u || (u.parse::<u32>().is_ok() && f[2] == u) || (u.is_empty() && f[2] == "0"))
-    });
-    let uid = match (u.parse::<u32>(), &entry) {
-        (Ok(n), _) => n,
-        (_, Some(f)) => f[2].parse()?,
-        _ if u.is_empty() => 0,
-        _ => bail!("user {u:?} not found in the image's /etc/passwd"),
-    };
-    let gid = match g {
-        Some(g) => match g.parse::<u32>() {
-            Ok(n) => n,
-            Err(_) => group
-                .lines()
-                .find_map(|l| {
-                    let f: Vec<_> = l.split(':').collect();
-                    (f.len() >= 3 && f[0] == g).then(|| f[2].parse().ok()).flatten()
-                })
-                .with_context(|| format!("group {g:?} not found"))?,
-        },
-        None => entry.as_ref().and_then(|f| f[3].parse().ok()).unwrap_or(0),
-    };
-    let home = entry.as_ref().map(|f| f[5].to_string()).unwrap_or_else(|| "/".into());
-    Ok((uid, gid, home))
-}
 
-fn prepare_root(uid: u32, gid: u32, files: &BTreeMap<String, String>) -> Result<()> {
-    fs::create_dir_all(format!("{ROOT}/etc"))?;
-    fs::copy("/etc/resolv.conf", format!("{ROOT}/etc/resolv.conf"))?;
-    fs::write(format!("{ROOT}/etc/hosts"), "127.0.0.1\tlocalhost vcontainer\n")?;
-    fs::write(format!("{ROOT}/etc/hostname"), "vcontainer\n")?;
-    let dir = format!("{ROOT}/run/secrets");
-    fs::create_dir_all(&dir)?;
-    for (name, b64) in files {
-        let path = format!("{dir}/{name}");
-        let mut f = fs::File::create(&path)?;
-        f.write_all(&vcontainer_core::b64::decode(b64)?)?;
-        std::os::unix::fs::chown(&path, Some(uid), Some(gid))?;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o400))?;
-    }
-    Ok(())
-}
 
 /// Starts the run helper and follows its reports: started / failed / exited.
 fn start(app: &Arc<App>, spec: &RunSpec) -> Result<()> {

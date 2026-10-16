@@ -57,9 +57,9 @@ impl Instance {
     }
 }
 
-pub fn instance(name: &str, zone: &str) -> Result<Option<Instance>> {
+pub fn instance(project: &str, name: &str, zone: &str) -> Result<Option<Instance>> {
     let out = Command::new("gcloud")
-        .args(["compute", "instances", "describe", name, "--zone", zone, "--format=json"])
+        .args(["compute", "instances", "describe", name, "--zone", zone, "--format=json", &format!("--project={project}")])
         .output()?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
@@ -71,25 +71,27 @@ pub fn instance(name: &str, zone: &str) -> Result<Option<Instance>> {
     Ok(Some(serde_json::from_slice(&out.stdout)?))
 }
 
-pub fn ensure_network() -> Result<()> {
-    if gcloud(&["compute", "networks", "describe", NETWORK, "--format=value(name)"]).is_err() {
+pub fn ensure_network(project: &str) -> Result<()> {
+    let p = format!("--project={project}");
+    if gcloud(&["compute", "networks", "describe", NETWORK, "--format=value(name)", &p]).is_err() {
         eprintln!("creating network {NETWORK}");
-        gcloud(&["compute", "networks", "create", NETWORK, "--subnet-mode=auto"])?;
+        gcloud(&["compute", "networks", "create", NETWORK, "--subnet-mode=auto", &p])?;
     }
     Ok(())
 }
 
 /// One firewall rule per session: the API port plus the container's ports,
 /// open only to `source`.
-pub fn ensure_firewall(session: &str, ports: &[u16], source: &str) -> Result<()> {
+pub fn ensure_firewall(project: &str, session: &str, ports: &[u16], source: &str) -> Result<()> {
+    let p = format!("--project={project}");
     let rule = format!("vcontainer-{session}");
     let allow: Vec<String> = std::iter::once(vcontainer_core::PORT).chain(ports.iter().copied()).map(|p| format!("tcp:{p}")).collect();
     let allow = allow.join(",");
-    if gcloud(&["compute", "firewall-rules", "describe", &rule, "--format=value(name)"]).is_ok() {
-        gcloud(&["compute", "firewall-rules", "update", &rule, &format!("--allow={allow}"), &format!("--source-ranges={source}")])?;
+    if gcloud(&["compute", "firewall-rules", "describe", &rule, "--format=value(name)", &p]).is_ok() {
+        gcloud(&["compute", "firewall-rules", "update", &rule, &format!("--allow={allow}"), &format!("--source-ranges={source}"), &p])?;
     } else {
         gcloud(&[
-            "compute", "firewall-rules", "create", &rule,
+            "compute", "firewall-rules", "create", &rule, &p,
             &format!("--network={NETWORK}"),
             &format!("--allow={allow}"),
             &format!("--source-ranges={source}"),
@@ -99,9 +101,10 @@ pub fn ensure_firewall(session: &str, ports: &[u16], source: &str) -> Result<()>
     Ok(())
 }
 
-pub fn create_instance(name: &str, zone: &str, machine_type: &str, image: &str, image_project: &str, owner: &str) -> Result<()> {
+pub fn create_instance(project: &str, name: &str, zone: &str, machine_type: &str, image: &str, image_project: &str, owner: &str) -> Result<()> {
     gcloud(&[
         "compute", "instances", "create", name,
+        &format!("--project={project}"),
         &format!("--zone={zone}"),
         &format!("--machine-type={machine_type}"),
         "--confidential-compute-type=TDX",
@@ -122,23 +125,24 @@ pub fn create_instance(name: &str, zone: &str, machine_type: &str, image: &str, 
     Ok(())
 }
 
-pub fn start(name: &str, zone: &str) -> Result<()> {
-    gcloud(&["compute", "instances", "start", name, &format!("--zone={zone}")]).map(|_| ())
+pub fn start(project: &str, name: &str, zone: &str) -> Result<()> {
+    gcloud(&["compute", "instances", "start", name, &format!("--zone={zone}"), &format!("--project={project}")]).map(|_| ())
 }
 
-pub fn delete(name: &str, zone: &str) -> Result<()> {
-    if instance(name, zone)?.is_some() {
-        gcloud(&["compute", "instances", "delete", name, &format!("--zone={zone}"), "--quiet"])?;
+pub fn delete(project: &str, name: &str, zone: &str) -> Result<()> {
+    let p = format!("--project={project}");
+    if instance(project, name, zone)?.is_some() {
+        gcloud(&["compute", "instances", "delete", name, &format!("--zone={zone}"), "--quiet", &p])?;
     }
     let rule = format!("vcontainer-{name}");
-    if gcloud(&["compute", "firewall-rules", "describe", &rule, "--format=value(name)"]).is_ok() {
-        gcloud(&["compute", "firewall-rules", "delete", &rule, "--quiet"])?;
+    if gcloud(&["compute", "firewall-rules", "describe", &rule, "--format=value(name)", &p]).is_ok() {
+        gcloud(&["compute", "firewall-rules", "delete", &rule, "--quiet", &p])?;
     }
     Ok(())
 }
 
-pub fn serial(name: &str, zone: &str) -> Result<String> {
-    gcloud(&["compute", "instances", "get-serial-port-output", name, &format!("--zone={zone}")])
+pub fn serial(project: &str, name: &str, zone: &str) -> Result<String> {
+    gcloud(&["compute", "instances", "get-serial-port-output", name, &format!("--zone={zone}"), &format!("--project={project}")])
 }
 
 /// This machine's public IPv4 address, for firewall rules.

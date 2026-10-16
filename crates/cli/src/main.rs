@@ -23,6 +23,8 @@ use state::{Policy, Session};
 
 /// Oldest acceptable Intel TCB evaluation data number.
 const MIN_TCB_EVAL_NUM: u32 = 20;
+/// Oldest acceptable security version of Google's TDX firmware (October 2026).
+const MIN_FW_SVN: u64 = 2;
 
 #[derive(Parser)]
 #[command(name = "vcontainer", version, about = "Run containers in verified Intel TDX confidential VMs on Google Cloud")]
@@ -151,25 +153,28 @@ fn run(name: &str, zone: &str, machine_type: &str, allow_from: Option<String>) -
     let release = state::release()?;
     let previous = state::load_session(name).ok();
     let zone = previous.as_ref().map_or(zone, |p| p.zone.as_str()).to_string();
-    let project = gcp::project()?;
+    let project = match &previous {
+        Some(p) => p.project.clone(),
+        None => gcp::project()?,
+    };
     let source = match (allow_from, &previous) {
         (Some(c), _) => c,
         (None, Some(p)) => p.source.clone(),
         (None, None) => format!("{}/32", gcp::my_ip()?),
     };
-    let inst = match gcp::instance(name, &zone)? {
+    let inst = match gcp::instance(&project, name, &zone)? {
         Some(i) if i.status == "RUNNING" => i,
         Some(i) => {
             eprintln!("starting {name} (was {})", i.status);
-            gcp::start(name, &zone)?;
-            gcp::instance(name, &zone)?.context("instance disappeared")?
+            gcp::start(&project, name, &zone)?;
+            gcp::instance(&project, name, &zone)?.context("instance disappeared")?
         }
         None => {
-            gcp::ensure_network()?;
-            gcp::ensure_firewall(name, &[], &source)?;
+            gcp::ensure_network(&project)?;
+            gcp::ensure_firewall(&project, name, &[], &source)?;
             eprintln!("creating TDX confidential VM {name} ({machine_type} in {zone})");
-            gcp::create_instance(name, &zone, machine_type, &release.image, &release.project, &crypto::owner_metadata(&owner))?;
-            gcp::instance(name, &zone)?.context("instance disappeared")?
+            gcp::create_instance(&project, name, &zone, machine_type, &release.image, &release.project, &crypto::owner_metadata(&owner))?;
+            gcp::instance(&project, name, &zone)?.context("instance disappeared")?
         }
     };
     let instance = state::Instance { id: inst.id.parse()?, project_number: gcp::project_number(&project)?, zone: zone.clone() };
@@ -180,6 +185,7 @@ fn run(name: &str, zone: &str, machine_type: &str, allow_from: Option<String>) -
         instance: Some(instance),
         config: previous.as_ref().and_then(|p| p.policy.config.clone()),
         min_tcb_eval_num: MIN_TCB_EVAL_NUM,
+        min_fw_svn: MIN_FW_SVN,
     };
     let mut s = Session {
         name: name.into(),
@@ -188,7 +194,8 @@ fn run(name: &str, zone: &str, machine_type: &str, allow_from: Option<String>) -
         machine_type: machine_type.into(),
         ip: inst.ip().context("instance has no external IP")?,
         source,
-        ports: previous.map(|p| p.ports).unwrap_or_default(),
+        ports: previous.as_ref().map(|p| p.ports.clone()).unwrap_or_default(),
+        pending: None,
         policy,
     };
     eprintln!("waiting for {} to boot and answer attestation", s.url());
@@ -213,7 +220,7 @@ fn wait_verified(s: &Session, timeout: Duration) -> Result<verify::Verified> {
             Err(e) => format!("{e:#}"),
         };
         if i % 6 == 5 {
-            if let Some(inst) = gcp::instance(&s.name, &s.zone)? {
+            if let Some(inst) = gcp::instance(&s.project, &s.name, &s.zone)? {
                 if !["RUNNING", "PROVISIONING", "STAGING"].contains(&inst.status.as_str()) {
                     bail!("the VM is {}; its console says:\n{}", inst.status, serial_tail(s));
                 }
@@ -228,7 +235,7 @@ fn wait_verified(s: &Session, timeout: Duration) -> Result<verify::Verified> {
 }
 
 fn serial_tail(s: &Session) -> String {
-    let out = gcp::serial(&s.name, &s.zone).unwrap_or_default();
+    let out = gcp::serial(&s.project, &s.name, &s.zone).unwrap_or_default();
     let lines: Vec<&str> = out.lines().collect();
     lines[lines.len().saturating_sub(25)..].join("\n")
 }
@@ -266,54 +273,41 @@ fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
 }
 
-fn deploy(name: &str, image: &str, mut config: Config, secret_specs: &[String], ports: &[u16]) -> Result<()> {
+fn deploy(name: &str, image: &str, config: Config, secret_specs: &[String], ports: &[u16]) -> Result<()> {
     let owner = state::owner_key()?;
     let mut s = state::load_session(name)?;
     let nonce = verify::nonce();
     let v = verify::verify(&verify::fetch_evidence(&s.url(), &nonce)?, &nonce, &s.policy)?;
-    ensure!(
-        v.status.state == State::Waiting,
-        "session {name} already ran a container (state {:?}); use a new session, or `vcontainer rm --session {name}` and run it again",
-        v.status.state
-    );
-    eprintln!("session verified: {}", v.claims.join("; "));
-
-    let r = ImageRef::parse(image)?;
-    let token = if r.is_google() { Some(gcp::access_token()?) } else { None };
-    let digest = Registry::new(&r, token.clone().map(|t| ("oauth2accesstoken".into(), t)))
-        .resolve()
-        .with_context(|| format!("resolving {image}"))?;
-    config.image = r.pinned(&digest);
-    config.registry_token = token.is_some();
-    let mut files = BTreeMap::new();
-    for spec in secret_specs {
-        let (n, value) = parse_secret(spec)?;
-        config.secrets.push(n.clone());
-        files.insert(n, b64::encode(&value));
-    }
-    let config_bytes = serde_json::to_vec(&config)?;
-    let sealed = if files.is_empty() && token.is_none() {
-        None
-    } else {
-        Some(crypto::seal(&v.boot, &serde_json::to_vec(&Secrets { files, registry_token: token })?)?)
+    let payload = match (v.status.state, &s.pending) {
+        (State::Waiting, _) => {
+            eprintln!("session verified: {}", v.claims.join("; "));
+            launch(&mut s, &owner, &v.boot, image, config, secret_specs)?
+        }
+        (State::Starting, Some(p)) => {
+            eprintln!("resuming the launch sent earlier (its response was lost)");
+            b64::decode(p)?
+        }
+        (st, _) => bail!(
+            "session {name} already ran a container (state {st:?}); use a new session, or `vcontainer rm --session {name}` and run it again"
+        ),
     };
-    let issued_at = now();
-    let sig = crypto::sign(&owner, &launch_message(&v.boot, issued_at, &config_bytes, sealed.as_ref()));
-    let boot_id = hex(&v.boot.boot_id);
-    eprintln!("launching {}", config.image);
-    verify::post(&s.url(), "/v1/launch", &LaunchRequest { boot_id: boot_id.clone(), issued_at, config: config_bytes.clone(), sealed, sig })?;
 
     // Commit only after seeing exactly this launch measured, before any pull.
-    s.policy.config = Some(b64::encode(&config_bytes));
     let n = verify::nonce();
-    let v2 = verify::verify(&verify::fetch_evidence(&s.url(), &n)?, &n, &s.policy)?;
-    ensure!(v2.status.state == State::Starting && v2.boot == v.boot, "unexpected state after launch: {:?}", v2.status.state);
-    let commit = CommitRequest { boot_id, sig: crypto::sign(&owner, &commit_message(&v.boot.boot_id, &config_bytes)) };
+    let ev = verify::fetch_evidence(&s.url(), &n)?;
+    let v2 = verify::verify(&ev, &n, &s.policy)?;
+    ensure!(
+        v2.status.state == State::Starting && v2.boot == v.boot && ev.ledger.get(2).map(|e| &e.payload) == Some(&payload),
+        "the session did not measure our launch (state {:?})",
+        v2.status.state
+    );
+    let commit = CommitRequest { boot_id: hex(&v.boot.boot_id), sig: crypto::sign(&owner, &commit_message(&v.boot.boot_id, &payload)) };
     verify::post(&s.url(), "/v1/commit", &commit)?;
+    s.pending = None;
     eprintln!("launch measured and committed; the VM is pulling the image");
     if !ports.is_empty() {
         s.ports = ports.to_vec();
-        gcp::ensure_firewall(name, &s.ports, &s.source)?;
+        gcp::ensure_firewall(&s.project, name, &s.ports, &s.source)?;
     }
     state::save_session(&s)?;
 
@@ -339,6 +333,39 @@ fn deploy(name: &str, image: &str, mut config: Config, secret_specs: &[String], 
             bail!("still {:?} after 30 minutes", st.state);
         }
     }
+}
+
+/// Signs and sends a launch; returns the launch event payload it must produce.
+fn launch(s: &mut Session, owner: &crypto::SigningKey, boot: &BootInfo, image: &str, mut config: Config, secret_specs: &[String]) -> Result<Vec<u8>> {
+    let r = ImageRef::parse(image)?;
+    let token = if r.is_google() { Some(gcp::access_token()?) } else { None };
+    let digest = Registry::new(&r, token.clone().map(|t| ("oauth2accesstoken".into(), t)))
+        .resolve()
+        .with_context(|| format!("resolving {image}"))?;
+    config.image = r.pinned(&digest);
+    config.registry_token = token.is_some();
+    let mut files = BTreeMap::new();
+    for spec in secret_specs {
+        let (n, value) = parse_secret(spec)?;
+        config.secrets.push(n.clone());
+        files.insert(n, b64::encode(&value));
+    }
+    let config_bytes = serde_json::to_vec(&config)?;
+    let sealed = if files.is_empty() && token.is_none() {
+        None
+    } else {
+        Some(crypto::seal(boot, &serde_json::to_vec(&Secrets { files, registry_token: token })?)?)
+    };
+    let issued_at = now();
+    let sig = crypto::sign(owner, &launch_message(boot, issued_at, &config_bytes, sealed.as_ref()));
+    let payload = launch_payload(&config_bytes, sealed.as_ref(), issued_at);
+    // Remember the launch first, so a lost response can be resumed.
+    s.policy.config = Some(b64::encode(&config_bytes));
+    s.pending = Some(b64::encode(&payload));
+    state::save_session(s)?;
+    eprintln!("launching {}", config.image);
+    verify::post(&s.url(), "/v1/launch", &LaunchRequest { boot_id: hex(&boot.boot_id), issued_at, config: config_bytes, sealed, sig })?;
+    Ok(payload)
 }
 
 fn verify_cmd(session: Option<String>, url: Option<String>, policy: Option<PathBuf>, export: Option<PathBuf>) -> Result<()> {
@@ -377,13 +404,13 @@ fn ls() -> Result<()> {
 
 fn logs(name: &str) -> Result<()> {
     let s = state::load_session(name)?;
-    println!("{}", gcp::serial(&s.name, &s.zone)?);
+    println!("{}", gcp::serial(&s.project, &s.name, &s.zone)?);
     Ok(())
 }
 
 fn rm(name: &str) -> Result<()> {
     let s = state::load_session(name)?;
-    gcp::delete(&s.name, &s.zone)?;
+    gcp::delete(&s.project, &s.name, &s.zone)?;
     state::remove_session(name)?;
     println!("deleted session {name}");
     Ok(())

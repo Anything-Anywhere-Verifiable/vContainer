@@ -64,7 +64,8 @@ pub fn verify(ev: &Evidence, nonce: &[u8; 32], policy: &Policy) -> Result<Verifi
         .context("fetching Intel collateral")?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     let qv = dcap_qvl::verify::verify(&ev.quote, &collateral, now).context("TD quote verification")?;
-    let eval_num = serde_json::from_str::<serde_json::Value>(&collateral.tcb_info)?["tcbEvaluationDataNumber"].as_u64().unwrap_or(0);
+    let eval = |json: &str| -> Result<u64> { Ok(serde_json::from_str::<serde_json::Value>(json)?["tcbEvaluationDataNumber"].as_u64().unwrap_or(0)) };
+    let eval_num = eval(&collateral.tcb_info)?.min(eval(&collateral.qe_identity)?);
     ensure!(qv.status == "UpToDate", "TCB status is {} (advisories {:?})", qv.status, qv.advisory_ids);
     ensure!(qv.advisory_ids.is_empty(), "TCB advisories {:?}", qv.advisory_ids);
     ensure!(eval_num >= policy.min_tcb_eval_num as u64, "TCB evaluation data number {eval_num} < {}", policy.min_tcb_eval_num);
@@ -92,7 +93,10 @@ pub fn verify(ev: &Evidence, nonce: &[u8; 32], policy: &Policy) -> Result<Verifi
 
     // 4. Firmware: Google-signed launch endorsement for this MRTD.
     let svn = crate::endorse::check_mrtd(&td.mr_td)?;
+    ensure!(svn >= policy.min_fw_svn, "firmware security version {svn} < {}", policy.min_fw_svn);
     claims.push(format!("firmware: MRTD {}… endorsed by Google (svn {svn})", &hex(&td.mr_td)[..16]));
+    crate::endorse::check_host(&qv.ppid)?;
+    claims.push("host: a Google Cloud machine (PPID in Google's host registry)".into());
 
     // 5. Boot chain: exactly the published PE, nothing in RTMR2.
     let rtmr1 = hex(&td.rt_mr1);

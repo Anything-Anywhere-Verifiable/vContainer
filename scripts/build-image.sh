@@ -9,7 +9,9 @@
 #   --clean      drop the cached kernel objects first (full rebuild)
 #
 # Everything runs inside the vcontainer/builder:dev container (repo mounted at
-# /work, host uid). Kernel objects are cached in .cache/kbuild-6.18.57.
+# /work, host uid). The kernel source is .cache/linux-6.18.57.tar.xz (sha256
+# pinned) plus image/patches/*.patch, extracted to .cache/linux-6.18.57;
+# kernel objects are cached in .cache/kbuild-6.18.57.
 # Outputs in out/:
 #   BOOTX64.EFI          the PE (arch/x86/boot/bzImage)
 #   kernel.config        the final kernel .config
@@ -43,7 +45,24 @@ if [[ "${1:-}" == --inside ]]; then
 	cd /work
 	ksrc=/work/.cache/linux-$KVER
 	kobj=/work/.cache/kbuild-$KVER
-	[[ -f "$ksrc/Makefile" ]] || die "missing kernel source $ksrc"
+	tarball=/work/.cache/linux-$KVER.tar.xz
+
+	# Source tree = sha256-pinned tarball + image/patches/*.patch. The
+	# applied series is recorded in the tree; on any change, re-extract and
+	# drop the objects (a re-extracted file keeps its old tarball mtime, so
+	# kbuild would not notice a removed patch).
+	series="$( (cat image/patches/*.patch 2>/dev/null || true) | sha256sum | cut -c1-64)"
+	if [[ "$(cat "$ksrc/.vcontainer-patches" 2>/dev/null)" != "$series" ]]; then
+		echo "$KSRC_SHA256  $tarball" | sha256sum -c --quiet - || die "$tarball: sha256 mismatch"
+		echo "build-image: extracting $tarball and applying image/patches" >&2
+		rm -rf "$ksrc" "$kobj"
+		tar -xf "$tarball" -C /work/.cache
+		for p in image/patches/*.patch; do
+			[[ -e "$p" ]] || continue
+			patch -s -d "$ksrc" -p1 --no-backup-if-mismatch <"$p" || die "patch $p failed"
+		done
+		echo "$series" >"$ksrc/.vcontainer-patches"
+	fi
 	ts="$(date -u -d "@$SOURCE_DATE_EPOCH" '+%Y-%m-%d %H:%M:%S UTC')"
 	export KBUILD_BUILD_TIMESTAMP="$ts" KBUILD_BUILD_USER=vcontainer \
 		KBUILD_BUILD_HOST=vcontainer KBUILD_BUILD_VERSION=1
@@ -127,11 +146,8 @@ cd "$repo"
 [[ -f "$init" ]] || die "missing init binary $init (build it, or pass --init PATH)"
 file -b "$init" 2>/dev/null | grep -q 'statically linked\|static-pie' ||
 	echo "build-image: warning: $init does not look statically linked" >&2
-tarball=".cache/linux-$KVER.tar.xz"
-if [[ -f "$tarball" ]]; then
-	echo "$KSRC_SHA256  $tarball" | sha256sum -c --quiet - || die "$tarball: sha256 mismatch"
-fi
-[[ -f ".cache/linux-$KVER/Makefile" ]] || die "extract $tarball to .cache/linux-$KVER first"
+[[ -f ".cache/linux-$KVER.tar.xz" ]] ||
+	die "missing .cache/linux-$KVER.tar.xz (https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$KVER.tar.xz)"
 
 if [[ -z "${SOURCE_DATE_EPOCH:-}" ]]; then
 	SOURCE_DATE_EPOCH="$(git log -1 --format=%ct 2>/dev/null || true)"

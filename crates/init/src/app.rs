@@ -11,7 +11,8 @@ use vcontainer_core::*;
 use crate::tdx;
 
 pub struct Launch {
-    pub config_bytes: Vec<u8>,
+    /// The launch event payload, which the owner's commit signs.
+    pub payload: Vec<u8>,
     pub config: Config,
     pub secrets: Secrets,
 }
@@ -80,10 +81,11 @@ impl App {
             Some(s) => serde_json::from_slice(&crypto::open(&self.hpke_sk, &self.boot.boot_id, s)?)?,
             None => Secrets::default(),
         };
-        for name in &config.secrets {
-            if !secrets.files.contains_key(name) {
-                return Err(ApiError(400, format!("secret {name} is declared but not sealed")));
-            }
+        let mut declared = config.secrets.clone();
+        declared.sort();
+        declared.dedup();
+        if secrets.files.keys().cloned().collect::<Vec<_>>() != declared {
+            return Err(ApiError(400, "sealed secrets do not match the declared names".into()));
         }
         if config.registry_token && secrets.registry_token.is_none() {
             return Err(ApiError(400, "registry_token is set but no token is sealed".into()));
@@ -100,10 +102,10 @@ impl App {
             let ts = libc::timespec { tv_sec: req.issued_at as _, tv_nsec: 0 };
             unsafe { libc::clock_settime(libc::CLOCK_REALTIME, &ts) };
         }
-        extend(&mut g, Event::new(EV_LAUNCH, launch_payload(&req.config, req.sealed.as_ref())))
-            .map_err(|e| ApiError(500, format!("{e:#}")))?;
+        let payload = launch_payload(&req.config, req.sealed.as_ref(), req.issued_at);
+        extend(&mut g, Event::new(EV_LAUNCH, payload.clone())).map_err(|e| ApiError(500, format!("{e:#}")))?;
         g.status.state = State::Starting;
-        g.launch = Some(Launch { config_bytes: req.config, config, secrets });
+        g.launch = Some(Launch { payload, config, secrets });
         crate::sys::log("launch measured; waiting for commit");
         Ok(())
     }
@@ -116,7 +118,7 @@ impl App {
             return Err(conflict("nothing to commit"));
         }
         let launch = g.launch.as_ref().context("launch missing")?;
-        let msg = commit_message(&self.boot.boot_id, &launch.config_bytes);
+        let msg = commit_message(&self.boot.boot_id, &launch.payload);
         crypto::verify(&self.owner, &msg, &req.sig).map_err(|e| ApiError(403, format!("{e:#}")))?;
         g.status.state = State::Pulling;
         drop(g);

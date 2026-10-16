@@ -7,12 +7,10 @@
 
 use anyhow::{bail, Context, Result};
 use flate2::read::MultiGzDecoder;
-use std::cell::Cell;
 use std::fs::{self, File};
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::os::unix::io::FromRawFd;
 use std::path::{Component, Path, PathBuf};
-use std::rc::Rc;
 use tar::{Archive, Entry, EntryType};
 
 use crate::sys::{check, cstr};
@@ -42,14 +40,14 @@ pub fn main(root: &str) -> Result<()> {
             return Ok(());
         }
         let kind = entry.header().entry_type();
-        if matches!(kind, EntryType::Char | EntryType::Block) {
-            return Ok(()); // device nodes come from the runtime's /dev
-        }
         let full = Path::new("/").join(path);
         if let Ok(old) = fs::symlink_metadata(&full) {
             if !(kind.is_dir() && old.is_dir()) {
                 remove(&full)?;
             }
+        }
+        if matches!(kind, EntryType::Char | EntryType::Block) {
+            return Ok(()); // device nodes come from the runtime's /dev
         }
         if kind == EntryType::Fifo {
             let mode = entry.header().mode()? & 0o7777;
@@ -74,31 +72,17 @@ fn remove(p: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Counts the compressed bytes the decoder actually consumed.
-struct Counting {
-    file: File,
-    n: Rc<Cell<u64>>,
-}
-
-impl Read for Counting {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let k = self.file.read(buf)?;
-        self.n.set(self.n.get() + k as u64);
-        Ok(k)
-    }
-}
-
 fn each_entry(layer: &mut File, len: u64, mut f: impl FnMut(&mut Entry<Box<dyn Read>>, &Path) -> Result<()>) -> Result<()> {
     layer.seek(SeekFrom::Start(0))?;
     let mut magic = [0u8; 4];
     let got = layer.read(&mut magic)?;
     layer.seek(SeekFrom::Start(0))?;
-    let n = Rc::new(Cell::new(0));
-    let raw = Counting { file: layer.try_clone()?, n: n.clone() };
+    // A duplicate descriptor shares the file offset with `layer`.
+    let raw = layer.try_clone()?;
     let reader: Box<dyn Read> = if got >= 2 && magic[..2] == [0x1f, 0x8b] {
         Box::new(MultiGzDecoder::new(BufReader::new(raw)))
     } else if got == 4 && magic == [0x28, 0xb5, 0x2f, 0xfd] {
-        // Unbuffered, so the count shows exactly where the frame ended.
+        // Unbuffered, so the offset shows exactly where the frame ended.
         Box::new(ruzstd::decoding::StreamingDecoder::new(raw).map_err(|e| anyhow::anyhow!("zstd: {e}"))?)
     } else {
         Box::new(BufReader::new(raw))
@@ -120,8 +104,9 @@ fn each_entry(layer: &mut File, len: u64, mut f: impl FnMut(&mut Entry<Box<dyn R
     // Whatever follows the tar end-of-archive must still be read, so the
     // rootfs never differs from what another runtime would extract.
     io::copy(&mut archive.into_inner(), &mut io::sink())?;
-    if n.get() != len {
-        bail!("layer has {} unconsumed bytes after its last frame", len - n.get());
+    let consumed = layer.stream_position()?;
+    if consumed != len {
+        bail!("layer has {} unconsumed bytes after its last frame", len - consumed);
     }
     Ok(())
 }

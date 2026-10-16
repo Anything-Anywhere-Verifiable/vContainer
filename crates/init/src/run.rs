@@ -11,11 +11,11 @@
 use anyhow::{bail, Context, Result};
 use caps::{CapSet, Capability};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::ffi::CString;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::io::FromRawFd;
 use std::path::Path;
 
@@ -27,8 +27,11 @@ pub struct RunSpec {
     pub argv: Vec<String>,
     pub env: Vec<String>,
     pub cwd: String,
-    pub uid: u32,
-    pub gid: u32,
+    /// `user[:group]` from the launch config or image (empty: root).
+    pub user: String,
+    /// Sealed secret files (base64), written to /run/secrets.
+    pub files: BTreeMap<String, String>,
+    pub resolv: String,
     pub serial: bool,
 }
 
@@ -129,6 +132,10 @@ fn setup_and_exec(spec: &RunSpec) -> Result<std::convert::Infallible> {
     mount(".", "/", "", libc::MS_MOVE, None).context("move new root")?;
     check(unsafe { libc::chroot(cstr(".").as_ptr()) }, "chroot")?;
     std::env::set_current_dir("/")?;
+    // From here on every path, and every symlink in the image, resolves
+    // inside the container's root.
+    let (uid, gid, home) = prepare(spec)?;
+    let env = with_defaults(spec.env.clone(), &home);
 
     let keep: HashSet<Capability> = CAPS.into_iter().collect();
     for cap in caps::all() {
@@ -136,11 +143,10 @@ fn setup_and_exec(spec: &RunSpec) -> Result<std::convert::Infallible> {
             caps::drop(None, CapSet::Bounding, cap).context("drop bounding capability")?;
         }
     }
-    let gid = spec.gid as libc::gid_t;
     check(unsafe { libc::setgroups(1, &gid) }, "setgroups")?;
     check(unsafe { libc::setgid(gid) }, "setgid")?;
-    check(unsafe { libc::setuid(spec.uid) }, "setuid")?;
-    if spec.uid == 0 {
+    check(unsafe { libc::setuid(uid) }, "setuid")?;
+    if uid == 0 {
         caps::set(None, CapSet::Effective, &keep)?;
         caps::set(None, CapSet::Permitted, &keep)?;
         caps::set(None, CapSet::Inheritable, &HashSet::new())?;
@@ -152,15 +158,90 @@ fn setup_and_exec(spec: &RunSpec) -> Result<std::convert::Infallible> {
     // Mark every other descriptor close-on-exec (the status pipe already is).
     unsafe { libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 4u32 /* CLOSE_RANGE_CLOEXEC */) };
 
-    let prog = resolve(&spec.argv[0], &spec.env)?;
+    let prog = resolve(&spec.argv[0], &env)?;
     let c = |v: &[String]| v.iter().map(|s| CString::new(s.as_str())).collect::<Result<Vec<_>, _>>();
-    let (argv, env) = (c(&spec.argv)?, c(&spec.env)?);
+    let (argv, env) = (c(&spec.argv)?, c(&env)?);
     let mut pa: Vec<*const libc::c_char> = argv.iter().map(|s| s.as_ptr()).collect();
     let mut pe: Vec<*const libc::c_char> = env.iter().map(|s| s.as_ptr()).collect();
     pa.push(std::ptr::null());
     pe.push(std::ptr::null());
     unsafe { libc::execve(cstr(&prog).as_ptr(), pa.as_ptr(), pe.as_ptr()) };
     bail!("exec {prog}: {}", std::io::Error::last_os_error())
+}
+
+/// Writes /etc files and secrets (as root, inside the new root) and resolves
+/// the user. Returns (uid, gid, home).
+fn prepare(spec: &RunSpec) -> Result<(u32, u32, String)> {
+    std::fs::create_dir_all("/etc")?;
+    write_new("/etc/resolv.conf", spec.resolv.as_bytes(), 0o644)?;
+    write_new("/etc/hosts", b"127.0.0.1\tlocalhost vcontainer\n", 0o644)?;
+    write_new("/etc/hostname", b"vcontainer\n", 0o644)?;
+    let (uid, gid, home) = user(&spec.user)?;
+    if !spec.files.is_empty() {
+        std::fs::create_dir_all("/run/secrets")?;
+        for (name, b64) in &spec.files {
+            let path = format!("/run/secrets/{name}");
+            write_new(&path, &vcontainer_core::b64::decode(b64)?, 0o400)?;
+            std::os::unix::fs::chown(&path, Some(uid), Some(gid))?;
+        }
+    }
+    Ok((uid, gid, home))
+}
+
+/// Replaces `path` with a new file, never following a symlink at `path`.
+fn write_new(path: &str, data: &[u8], mode: u32) -> Result<()> {
+    if std::fs::symlink_metadata(path).is_ok_and(|m| !m.is_dir()) {
+        std::fs::remove_file(path)?;
+    }
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(mode)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .with_context(|| format!("create {path}"))?;
+    f.write_all(data)?;
+    Ok(())
+}
+
+/// Resolves `user[:group]` against the image's /etc/passwd and /etc/group.
+fn user(spec: &str) -> Result<(u32, u32, String)> {
+    let read = |f: &str| std::fs::read_to_string(f).unwrap_or_default();
+    let (passwd, group) = (read("/etc/passwd"), read("/etc/group"));
+    let (u, g) = spec.split_once(':').map_or((spec, None), |(u, g)| (u, Some(g)));
+    let entry: Option<Vec<&str>> = passwd.lines().map(|l| l.split(':').collect::<Vec<_>>()).find(|f| {
+        f.len() >= 6 && (f[0] == u || f[2] == u || (u.is_empty() && f[2] == "0"))
+    });
+    let uid = match (u.parse::<u32>(), &entry) {
+        (Ok(n), _) => n,
+        (_, Some(f)) => f[2].parse()?,
+        _ if u.is_empty() => 0,
+        _ => bail!("user {u:?} is not in the image's /etc/passwd"),
+    };
+    let gid = match g {
+        Some(g) => match g.parse::<u32>() {
+            Ok(n) => n,
+            Err(_) => group
+                .lines()
+                .find_map(|l| {
+                    let f: Vec<&str> = l.split(':').collect();
+                    (f.len() >= 3 && f[0] == g).then(|| f[2].parse().ok()).flatten()
+                })
+                .with_context(|| format!("group {g:?} is not in the image's /etc/group"))?,
+        },
+        None => entry.as_ref().and_then(|f| f[3].parse().ok()).unwrap_or(0),
+    };
+    let home = entry.as_ref().map(|f| f[5].to_string()).unwrap_or_else(|| "/".into());
+    Ok((uid, gid, home))
+}
+
+fn with_defaults(mut env: Vec<String>, home: &str) -> Vec<String> {
+    for (k, v) in [("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"), ("HOME", home), ("HOSTNAME", "vcontainer")] {
+        if !env.iter().any(|e| e.starts_with(&format!("{k}="))) {
+            env.push(format!("{k}={v}"));
+        }
+    }
+    env
 }
 
 /// Finds `prog` on the container's PATH, as execvp would.

@@ -24,8 +24,7 @@ VT
 INPUT
 SERIO
 DMI
-# Hypervisor PV paths that run even with nopv (ignore_nopv), and kvmclock
-KVM_GUEST
+# Other hypervisors' guest support
 XEN
 JAILHOUSE_GUEST
 ACRN_GUEST
