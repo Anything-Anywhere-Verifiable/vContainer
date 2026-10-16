@@ -272,8 +272,9 @@ fn deploy(name: &str, args: Option<LaunchArgs>) -> Result<()> {
             launch(&mut s, &owner, &v.boot, args)?
         }
         (State::Starting, None) => {
+            let saved = s.policy.launch.as_deref().context("no saved launch to resume")?;
             eprintln!("resuming the launch sent earlier: {image}");
-            b64::decode(s.policy.launch.as_deref().context("no saved launch to resume")?)?
+            b64::decode(saved)?
         }
         (State::Starting, Some(_)) => bail!(
             "an earlier deploy to {name} was interrupted after its launch ({image}); start it with `vcontainer deploy --session {name} --resume`, or discard it with `vcontainer rm --session {name}`"
