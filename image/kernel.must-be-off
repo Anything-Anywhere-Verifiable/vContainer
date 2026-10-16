@@ -1,0 +1,49 @@
+# Symbols that must NOT be enabled (=y or =m) in the final kernel .config.
+# One symbol per line, without the CONFIG_ prefix. image/check-config.sh
+# fails the build if any of them is set. See DESIGN.md §4.1 (D7, D10).
+
+# Kernel code loading
+MODULES
+KEXEC
+KEXEC_FILE
+KPROBES
+BPF_SYSCALL
+# Host- or workload-reachable debug/introspection
+DEVMEM
+MAGIC_SYSRQ
+COREDUMP
+DEBUG_FS
+HIBERNATION
+# Workload attack surface (D7)
+USER_NS
+IO_URING
+USERFAULTFD
+IA32_EMULATION
+# Host-controlled input devices
+VT
+INPUT
+SERIO
+DMI
+# Hypervisor PV paths that run even with nopv (ignore_nopv), and kvmclock
+KVM_GUEST
+XEN
+JAILHOUSE_GUEST
+ACRN_GUEST
+BHYVE_GUEST
+# vTPM is outside the TCB (D3)
+TCG_TPM
+HW_RANDOM_TPM
+LOAD_UEFI_KEYS
+# Block devices: the guest never touches the disk (D2)
+ATA
+SCSI
+BLK_DEV_NVME
+# Device classes we never use
+USB_SUPPORT
+DRM
+SOUND
+VIRTIO
+HOTPLUG_PCI
+# Network features not used
+IPV6
+NETFILTER
