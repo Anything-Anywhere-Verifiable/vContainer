@@ -15,61 +15,45 @@ vContainer does this with as little code as possible:
 | Code we wrote that runs in the VM (`/init` and the protocol) | about 1,450 lines of Rust |
 | CLI and verifier, on your machine | about 950 lines of Rust |
 | Kernel configuration | `allnoconfig` plus 107 options |
-| Build script | about 90 lines of shell |
+| Build scripts | about 110 lines of shell |
 
-The VM boots a single file: a Linux kernel with a built-in initramfs whose only program is `/init`. There is no bootloader, root disk, systemd or container runtime. The build is reproducible, and the file's measurement is predicted offline.
+The VM boots a single file: a Linux kernel with a built-in initramfs whose only program is `/init`. There is no bootloader, root disk, systemd or container runtime. Until a container is deployed, the VM runs only the kernel and `/init`, which links musl and crates such as rustls, hpke and tar. The build is designed to be reproducible, and the file's measurement is predicted offline.
 
 ## How it works
 
-```
-your machine                          confidential VM
-─────────────────────────────────────────────────────────────────
-vcontainer run     ── create VM ──▶   boot the measured image,
-                                      record a fresh key and yours
-                   ◀── evidence ───
-verify hardware, firmware, boot image, ledger
+The steps below are for the demo platform, Intel TDX on Google Cloud C3.
 
-vcontainer deploy  ── launch ─────▶   record the signed launch
-                   ◀── evidence ───
-verify the recorded launch
-                   ── commit ─────▶   pull by digest, check layers,
-                                      start the container
-```
+1. **Boot and measure.** `vcontainer run` creates the VM. Before anything else, `/init` records a fresh key for this boot, then your public key, in a hardware register that can only be extended.
+2. **Verify the empty VM.** Your machine asks the VM for a quote over a fresh nonce and checks it: Intel's signature, Google's signed firmware, the exact boot image and the recorded keys.
+3. **Launch, verify, commit.** `vcontainer deploy` sends a launch signed with your key: the image digest, the container settings, and the secrets, encrypted to the boot key. `/init` records the launch. Your machine checks that the record is the launch it sent, and only then lets the VM pull.
+4. **Pull and run.** The VM pulls the image by digest, checks every layer and starts the container. Secrets appear as files in `/run/secrets`.
 
-1. **Boot.** `vcontainer run` creates the VM. Before it does anything else, `/init` records a fresh key for this boot and your public key in a hardware measurement register that can only be extended.
-2. **Verify.** Your machine asks the VM for a quote over a fresh nonce and checks the hardware vendor's signature, the cloud's signed firmware, the exact boot image and the register. The VM is now verified and empty.
-3. **Launch.** `vcontainer deploy` sends the container's configuration, signed with your key, with the secrets encrypted to the key from step 1. `/init` records the launch. Your machine verifies that the recorded launch is the one it sent, and only then lets the VM pull.
-4. **Run.** The VM pulls the image by digest, checks every layer and starts the container. Secrets appear as files in `/run/secrets`.
-
-So the quote covers everything that happened before the pull, and the secrets reach only the VM you verified. The container cannot extend the register or request quotes over its own data, so it cannot forge the evidence.
-
-The current implementation runs on Intel TDX on Google Cloud C3; see [Status](#status) for what is platform-specific.
+As a result, you have verified the VM's boot and its empty state before it pulls anything, and secrets reach only that VM. The container cannot extend the register or request quotes over its own data, so it cannot forge the evidence.
 
 ## Install
 
-You need:
+Requirements:
 
-- Linux x86-64 with Docker and `rustup` (the repository pins Rust 1.95.0);
-- a Google Cloud project with the Compute Engine API enabled and C3 quota in your zone;
-- `gcloud`, logged in.
+- Linux x86-64 with Docker and `rustup` (the repository pins Rust 1.95.0).
+- A Google Cloud project with the Compute Engine API enabled and C3 quota in your zone.
+- `gcloud`, logged in, with a default project set (`gcloud config set project PROJECT`).
 
 ```sh
-gcloud config set project PROJECT
 git clone https://github.com/Mengyuan-L/vContainer && cd vContainer
 scripts/build-image.sh                     # /init and the kernel, built in a pinned container
 cargo install --locked --path crates/cli   # the vcontainer CLI
-vcontainer publish                         # upload the image, record its expected measurements
+vcontainer publish                         # create the GCE image, record its expected measurements
 ```
 
-Do this once per release. The build needs a clean checkout (pass `--dev` while changing code), and anyone can rebuild a release byte for byte from its commit. Your owner key and sessions are kept in `~/.config/vcontainer`.
+You do this once per release. The first build downloads the kernel source and the build container's packages.
+
+`scripts/build-image.sh` refuses a checkout with uncommitted changes; pass `--dev` while hacking. Anyone can rebuild a release byte for byte from its commit, which `vcontainer publish` records and `vcontainer verify` prints. To see the expected measurements without publishing, run `vcontainer measure`.
+
+Your owner key and session files live in `~/.config/vcontainer`. The key is created on first use.
 
 ## Usage
 
-A session is one VM, and each boot of it runs one container: start the session, deploy into it, and remove it when you are done. The examples use a session named `agent`; `[IP]`, `[ZONE]`, `[ID]` and `[REGISTRY]` stand for your own values.
-
-### vcontainer run
-
-Create a VM, or reconnect to an existing one, and verify it:
+A session is one VM, and each boot of it runs one container. Start a session, deploy into it, and remove it when you are done. In the example below, `[IP]`, `[ZONE]`, `[ID]` and `[REGISTRY]` stand for your own values.
 
 ```console
 $ vcontainer run --session agent
@@ -85,17 +69,7 @@ session agent ([IP], [ZONE]): VERIFIED
   ✓ boot image: kernel+initramfs+cmdline+/init with Authenticode 542ff6b7…21cffc12 (release vcontainer-542ff6b77f72, commit 32c2cb47…)
   ✓ ledger: fresh boot key, our owner key
   state: Waiting
-```
 
-Each ✓ line is one check, and all of them must pass. This takes about 35 seconds on a `c3-standard-4`.
-
-The defaults are `--zone us-central1-a` and `--machine-type c3-standard-4`. The attestation port (7700) and any ports you open later are reachable only from `--allow-from CIDR`, which defaults to your public IP. If the VM has rebooted, for example after host maintenance, `vcontainer run` reconnects to it empty and you deploy again.
-
-### vcontainer deploy
-
-Deploy a container image into the verified VM. Here it is the [OpenRouter example agent](examples/openrouter-agent), with its API key as a secret:
-
-```console
 $ vcontainer deploy --session agent [REGISTRY]/openrouter-agent:v1 \
     -p 8080 --secret OPENROUTER_API_KEY=@openrouter.key
 launching [REGISTRY]/openrouter-agent@sha256:acdf834c…
@@ -109,39 +83,48 @@ session agent ([IP], [ZONE]): VERIFIED
   port 8080: http://[IP]:8080
 ```
 
-The agent reads its key from `/run/secrets/OPENROUTER_API_KEY`. Deploying this 43 MB image takes 20–30 seconds.
+On a `c3-standard-4`, `vcontainer run` takes about 35 s, and deploying the 43 MB demo image takes 20–30 s. The demo agent in [examples/openrouter-agent](examples/openrouter-agent) is 40 lines of Python. It answers chat requests through OpenRouter with a key read from `/run/secrets`.
 
-Options:
+### vcontainer run
+
+```sh
+vcontainer run --session NAME [--zone ZONE] [--machine-type TYPE] [--allow-from CIDR]
+```
+
+Creates a TDX VM, or reconnects to an existing one, and verifies it. The defaults are `us-central1-a` and `c3-standard-4`. The attestation port (7700) and the container's ports are reachable only from `--allow-from`, which defaults to your public IP.
+
+### vcontainer deploy
+
+```sh
+vcontainer deploy --session NAME IMAGE [OPTIONS] [-- CMD ARGS...]
+```
+
+Verifies the session, sends the launch, verifies that the VM recorded it, and then lets the VM pull and start the image. `vcontainer pull` is an alias. Options:
 
 - `-p PORT` opens a container port to the `--allow-from` range.
 - `-e KEY=VALUE` sets an environment variable. Variables are public (see [Trust](#trust)).
-- `--secret NAME=@FILE`, `--secret NAME=VALUE` or `--secret NAME` (taken from your environment) encrypts a secret to the VM. It appears as `/run/secrets/NAME`.
-- `--user`, `--workdir` and `--entrypoint` override the image's settings; `-- CMD ARGS...` overrides its command.
-- `--quiet` keeps container output off the serial console, which the host can read.
+- `--secret NAME=@FILE`, `--secret NAME=VALUE` or `--secret NAME` (taken from your environment) seals a secret to the VM. It appears as `/run/secrets/NAME`.
+- `--user`, `--workdir` and `--entrypoint` override the image's settings.
+- `--quiet` keeps container output off the serial console.
 - `--resume` finishes a deploy that was interrupted after its launch was sent but before the commit.
 
-Images must be linux/amd64 and fit in RAM. A tag is resolved to a digest before launch, and the digest is what gets measured. Private images work on Artifact Registry and gcr.io, where your `gcloud` access token is sealed to the VM. `vcontainer pull` is an alias.
+Images must be linux/amd64 and fit in RAM. The kernel is minimal; for example, it has no user namespaces or io_uring. A tag is resolved to a digest before launch, and the digest is what gets measured. Private images work on Artifact Registry and gcr.io, where your `gcloud` access token is sealed to the VM.
 
 ### vcontainer verify
 
-Verify a session again at any time, and optionally export its policy:
-
 ```sh
-vcontainer verify --session agent --export-policy agent-policy.json
+vcontainer verify --session NAME [--export-policy FILE]
+vcontainer verify --url http://[IP]:7700 --policy FILE
 ```
 
-The policy holds the expected measurements, your public key, the instance and the exact launch, and no secrets. Anyone with the file who can reach port 7700 can verify the session without your key or your cloud account:
-
-```sh
-vcontainer verify --url http://[IP]:7700 --policy agent-policy.json
-```
+Verifies a session again at any time. `--export-policy` writes what a third party needs: the expected measurements, your public key, the instance and the exact launch, but no secrets. With that file, anyone who can reach port 7700 runs the second form, without your key or your cloud account.
 
 ### vcontainer logs, ls, rm
 
 ```sh
-vcontainer logs --session agent    # the serial console: kernel, /init and container output
-vcontainer ls                      # your sessions and what each one runs
-vcontainer rm --session agent      # delete the VM and its firewall rule
+vcontainer logs --session NAME    # the serial console: kernel, /init and container output
+vcontainer ls                     # your sessions and what each one runs
+vcontainer rm --session NAME      # delete the VM and its firewall rule
 ```
 
 A session bills as a running VM until you remove it.
@@ -175,13 +158,11 @@ Limits:
 
 - One container per VM boot, with its root filesystem in RAM.
 - After host maintenance the VM reboots empty: run `vcontainer run`, then `vcontainer deploy`, again.
-- The kernel is minimal; images that need user namespaces or io_uring do not work.
 - There is no SEV-SNP support. On Google Cloud's generally available SNP machines, the kernel can be identified only through a vTPM that the host runs. [docs/design](docs/design/) has the analysis.
 
 ## Learn more
 
 - [docs/whitepaper.md](docs/whitepaper.md) presents the design top-down: what a PASS establishes, what it does not, and why.
-- [examples/openrouter-agent](examples/openrouter-agent) builds and runs the demo agent.
 - [image/README-image.md](image/README-image.md) covers the kernel configuration and the platform facts measured on real C3 hardware.
 - Code:
   - [crates/core](crates/core): the protocol and the OCI client;
