@@ -1,6 +1,46 @@
 # vcontainer
 
-Run a container in an Intel TDX confidential VM on Google Cloud, and check what is running there before you hand it anything.
+vcontainer runs a container in an Intel TDX confidential VM on Google Cloud. Before your image, secrets or data reach the VM, it proves to you exactly what the VM is running.
+
+The VM boots a single file: a Linux kernel with a built-in initramfs whose only program is a small static Rust `/init`. There is no bootloader, root disk, systemd or container runtime to trust. The file is built reproducibly, and its measurement is predicted offline.
+
+```sh
+vcontainer run --session demo                      # boot a TDX VM and verify it
+vcontainer deploy --session demo IMAGE -p 8080     # send the container to the verified VM
+vcontainer verify --session demo                   # verify again at any time
+```
+
+## How it works
+
+1. **Boot and measure.** `run` creates a C3 TDX VM. Before any network I/O, `/init` records a fresh boot key in the TDX register RTMR3. It then records your public key, read from instance metadata.
+2. **Verify the empty VM.** The CLI fetches a quote over a fresh nonce. It checks Intel's signature and TCB status, Google's signed firmware, the exact boot image, and the RTMR3 ledger.
+3. **Launch, verify, commit.** `deploy` sends a launch signed with your key. The launch carries the image digest, the container settings, and secrets encrypted (HPKE) to the boot key. `/init` records the launch in RTMR3. The CLI checks that the recorded launch is the one it sent, and only then lets the VM pull.
+4. **Pull and run.** The VM pulls the image by digest and checks every layer. It unpacks the image into RAM, records the manifest digest, and starts the container in its own namespaces. Secrets appear as files in `/run/secrets`.
+
+As a result, the quote covers everything that ran before the pull, and secrets reach only a VM you have verified. The container cannot reach the quote interface or write to RTMR3, so it cannot forge the evidence. Anyone you give an exported policy can verify the session. They need neither your key nor your cloud account.
+
+## Install
+
+Requirements:
+- Linux x86-64 with Docker and `rustup` (the repository pins Rust 1.95.0).
+- A Google Cloud project with the Compute Engine API enabled and C3 quota in your zone.
+- `gcloud`, logged in, with a default project set (`gcloud config set project PROJECT`).
+
+```sh
+git clone https://github.com/Mengyuan-L/vcontainer && cd vcontainer
+scripts/build-init.sh             # /init, static musl, built in a pinned container
+scripts/build-image.sh            # Linux 6.18.57 (sha256-checked) + /init -> out/BOOTX64.EFI, out/disk.raw
+cargo install --path crates/cli   # the vcontainer CLI
+vcontainer publish                # create the GCE image and record its expected measurements
+```
+
+You do this once per release. It takes about 10 minutes, mostly building the kernel.
+
+The build scripts refuse a dirty tree; pass `--dev` while hacking. Every release is therefore a commit that anyone can rebuild byte for byte. `verify` prints that commit, and `vcontainer measure` prints the expected measurements without publishing.
+
+Your owner key and session files live in `~/.config/vcontainer`. The key is created on first use.
+
+## Usage
 
 ```console
 $ vcontainer run --session agent
@@ -17,114 +57,64 @@ session agent (34.28.55.190, us-central1-a): VERIFIED
   ✓ ledger: fresh boot key, our owner key
   state: Waiting
 
-$ vcontainer deploy --session agent us-central1-docker.pkg.dev/agentlockbox/vcontainer/openrouter-agent:v1 \
+$ vcontainer deploy --session agent us-central1-docker.pkg.dev/P/R/openrouter-agent:v1 \
     -p 8080 --secret OPENROUTER_API_KEY=@openrouter.key
-launching us-central1-docker.pkg.dev/agentlockbox/vcontainer/openrouter-agent@sha256:acdf834c…
+launching us-central1-docker.pkg.dev/P/R/openrouter-agent@sha256:acdf834c…
 launch measured and committed; the VM is pulling the image
 session agent (34.28.55.190, us-central1-a): VERIFIED
   ...
-  ✓ launch measured before pull: us-central1-docker.pkg.dev/.../openrouter-agent@sha256:acdf834c…
+  ✓ launch measured before pull: us-central1-docker.pkg.dev/P/R/openrouter-agent@sha256:acdf834c…
   ✓ container sealed: manifest sha256:b38d15a0…
   state: Running
   port 8080: http://34.28.55.190:8080
-
-$ curl -X POST http://34.28.55.190:8080/chat -d '{"message":"Reply with exactly: vcontainer works"}'
-{"model": "openai/gpt-4o-mini", "reply": "vcontainer works"}
 ```
 
-Booting and verifying took about 36 s; deploying took about 20 s (c3-standard-4).
+On a `c3-standard-4`, `run` takes about 36 s and `deploy` about 20 s. The agent in [examples/openrouter-agent](examples/openrouter-agent) is 40 lines of Python.
 
-## What you get
+| Command | What it does |
+|---|---|
+| `run --session NAME` | Create a TDX VM, or reconnect to an existing one, and verify it. `--zone` (default `us-central1-a`), `--machine-type` (default `c3-standard-4`), `--allow-from CIDR` (default: your public IP). |
+| `deploy --session NAME IMAGE [-- CMD ARGS]` | Verify, launch, verify again, then pull and start the image. Also available as `pull`. |
+| `verify --session NAME` | Verify again. `--export-policy p.json` writes what a third party needs; they then run `vcontainer verify --url http://IP:7700 --policy p.json`. |
+| `logs --session NAME` | Print the serial console: kernel, `/init` and container output. |
+| `ls`, `rm --session NAME` | List sessions; delete a session's VM and firewall rule. A session bills as a running VM until you `rm` it. |
 
-- **One verified boot image.** The VM boots a single file: a Linux kernel with a built-in initramfs and a built-in command line. The initramfs holds one static Rust program, `/init`. There is no bootloader, root disk, systemd, containerd or runc. The image is built reproducibly, and its measurement is predicted offline.
-- **Verify before you send.** A new session waits empty. `vcontainer` checks Intel's quote, Google's signed firmware, the exact boot image and the session's ledger. Only then does it send the container's configuration, signed by your key. It verifies again that the VM recorded that configuration, and only then lets the VM pull the image. Everything that ran before the pull is covered by the quote. See [the whitepaper](docs/whitepaper.md).
-- **Secrets only to the verified VM.** `--secret` values are encrypted (HPKE) to a key created inside the VM at boot. They appear as files in `/run/secrets`, so they never touch instance metadata, the disk or the launch configuration. The same mechanism carries the registry token for a private image.
-- **Third-party verification.** `vcontainer verify --export-policy p.json` writes everything another person needs. With it they run `vcontainer verify --url http://IP:7700 --policy p.json`; they do not need your key or your cloud account.
-- **Small.** About 2,700 lines of Rust (protocol 680, guest 980, CLI 1,000), 170 lines of shell, and a 109-option kernel configuration.
+`deploy` options:
+- `-p PORT` opens a container port to the `--allow-from` range.
+- `-e KEY=VALUE` sets an environment variable. Variables are measured and appear in `verify` output, so do not use them for secrets.
+- `--secret NAME=@FILE`, `NAME=VALUE` or `NAME` (taken from your environment) seals a secret to the VM. It appears as `/run/secrets/NAME`.
+- `--user`, `--workdir` and `--entrypoint` override the image's settings.
+- `--quiet` keeps container output off the serial console. By default output goes there, where the host can read it.
+- `--resume` finishes a deploy that was interrupted after its launch was sent.
 
-## Quick start
-
-You need a Google Cloud project with `gcloud` logged in, Docker, and Rust (`rustup`; the repository pins 1.95.0).
-
-One-time setup. This builds and publishes the boot image (about 10 minutes, mostly the kernel):
-
-```sh
-scripts/build-init.sh                   # /init, static musl, in a pinned build container
-scripts/build-image.sh                  # downloads Linux 6.18.57 (sha256-checked); builds out/BOOTX64.EFI, out/disk.raw
-cargo install --path crates/cli         # the vcontainer CLI
-vcontainer publish                      # upload, create the GCE image, record expected measurements
-```
-
-Both build scripts refuse a dirty tree (pass `--dev` while hacking). A release is therefore always a commit that anyone can rebuild byte for byte. `out/build-info.json` names the commit, and `verify` prints it.
-
-Then:
-
-```sh
-vcontainer run --session demo                       # create (or reconnect to) a TDX VM and verify it
-vcontainer deploy --session demo IMAGE -p 8080 \
-    --secret API_KEY=@./key.txt -e MODEL=x -- cmd args   # 'pull' is an alias
-vcontainer deploy --session demo --resume           # finish a deploy interrupted after its launch
-vcontainer verify --session demo                    # verify again at any time
-vcontainer logs --session demo                      # serial console: kernel, /init, container output
-vcontainer ls
-vcontainer rm --session demo                        # delete the VM and its firewall rule
-```
-
-- **Images.** Any linux/amd64 OCI or Docker image works. Tags are resolved to a digest before launch, and the digest is what gets measured. For Artifact Registry and gcr.io images, your `gcloud` access token is sealed to the VM so it can pull privately.
-- **Network.** Port 7700 (the attestation API) and the ports you pass with `-p` are opened only to this machine's public IP. Use `--allow-from CIDR` on `run` to change that.
-- **Defaults.** A session is `c3-standard-4` in `us-central1-a`. Change them with `--machine-type` and `--zone`.
-
-The demo agent in [examples/openrouter-agent](examples/openrouter-agent) is 40 lines of Python. It answers `POST /chat` through OpenRouter, using the key from `/run/secrets/OPENROUTER_API_KEY`.
-
-## How it works
-
-```
-your machine                                      Google Cloud C3 (Intel TDX)
-vcontainer run      ── gcloud: create VM ──▶    Google firmware (MRTD, Google-signed)
-                                                  └ BOOTX64.EFI = kernel + initramfs + cmdline   (RTMR1)
-                                                     └ /init: ledger in RTMR3
-                                                         0 boot   fresh HPKE key, boot id
-                                                         1 owner  your public key (from metadata)
-                    ◀── GET /v1/evidence ───     quote(nonce, status) + ledger + event log
-  verify (Intel PCS, Google endorsement, release, ledger)
-vcontainer deploy   ── POST /v1/launch ──▶       2 launch config ‖ H(sealed secrets) ‖ time
-  verify again: the launch is measured
-                    ── POST /v1/commit ──▶       pull by digest, verify, unpack to RAM
-                                                  3 exec   manifest digest, then start the container
-                    ◀── GET /v1/evidence ───     state: running
-```
-
-The container runs in its own mount and PID namespaces. It gets Docker's default capabilities minus `MKNOD` and `SYS_CHROOT`, and a read-only `/proc/sys` and `/sys`. It cannot see `/init`'s mounts or any TDX or TPM device. The kernel itself has no modules, no user namespaces, no io_uring, no BPF, no SysRq and no usermode helpers. This is not a sandbox: it exists so that the container cannot forge or corrupt the evidence `/init` serves.
+Any linux/amd64 OCI or Docker image works. A tag is resolved to a digest before launch, and the digest is what gets measured. For Artifact Registry and gcr.io images, your `gcloud` access token is sealed to the VM so it can pull private images.
 
 ## Trust
 
-The design trusts:
-- Intel (the CPU, the TDX module and the quoting enclave);
+vcontainer trusts:
+- Intel: the CPU, the TDX module and the quoting enclave;
 - Google's TDX firmware, as checked against Google's signed launch endorsement;
-- the host's default configuration (ACPI tables, the KVM paravirtual interface), which is measured but not appraised;
+- the host's default configuration (ACPI tables and the KVM paravirtual interface), which is measured but not appraised;
 - you, the owner.
 
-The host is otherwise untrusted: it controls the network, instance metadata, the disk, the serial console and the registry path. The [whitepaper](docs/whitepaper.md) lists what a PASS establishes, what it does not, and why.
-
-## Layout
-
-```
-crates/core    protocol: ledger, evidence, launch/commit, HPKE, Ed25519, OCI registry client
-crates/init    guest PID 1: boot, RTMR3, quotes, API, pull/unpack, start the container
-crates/cli     vcontainer: run, deploy, verify, ls, logs, rm, measure, publish
-image/         kernel configuration (allnoconfig + 109 options) and its checks
-scripts/       build-init.sh, build-image.sh, qemu-boot.sh
-tools/         tdx-probe (hardware probe used to validate the platform), predict-rtmr1.py
-examples/      openrouter-agent
-docs/          whitepaper.md
-```
+The host is otherwise untrusted: it controls the network, instance metadata, the disk, the serial console and the path to the registry. The container's isolation exists so that the container cannot forge the evidence. It is not a sandbox for untrusted code.
 
 ## Status
 
-Version 0.1, Intel TDX on Google Cloud C3 only. It works end to end on real hardware. The current release (commit 55d07e6) was rebuilt from scratch and matched byte for byte.
+Version 0.1 supports Intel TDX on Google Cloud C3 only. It works end to end on real hardware. The release built from commit 55d07e6 was rebuilt from scratch and matched byte for byte.
 
-The code had three Codex review rounds and one adversarial multi-agent review (four lenses, each finding checked by a skeptic). Every confirmed finding was fixed; [docs/whitepaper.md](docs/whitepaper.md) §8 summarizes them.
+The code had three Codex review rounds and one adversarial multi-agent review. Every confirmed finding was fixed; [whitepaper §8](docs/whitepaper.md#8-security-analysis) summarizes them.
 
-There is no SEV-SNP support. On Google Cloud's generally available SNP machines, the kernel can be identified only through a vTPM that the host runs. An SVSM-based mode is in alpha. See [docs/design](docs/design/) for the analysis.
+Limits:
+- One container runs per session, and its root filesystem lives in RAM.
+- After host maintenance the VM reboots empty. Run `run`, then `deploy`, again. Until then `verify` reports that the session was not deployed again.
+- There is no SEV-SNP support. On Google Cloud's generally available SNP machines, the kernel can be identified only through a vTPM that the host runs. [docs/design](docs/design/) has the analysis.
 
-One container runs per session, and its root filesystem lives in RAM. After host maintenance the VM reboots empty. Run `vcontainer run --session NAME` (it picks up a new IP if there is one), then `vcontainer deploy`. Until then, `verify` reports that the session was not deployed again.
+## Learn more
+
+- [docs/whitepaper.md](docs/whitepaper.md) presents the design top-down: what a PASS establishes, what it does not, and why.
+- [image/README-image.md](image/README-image.md) covers the kernel configuration and the platform facts measured on real C3 hardware.
+- Code, about 2,600 lines of Rust:
+  - [crates/core](crates/core): the protocol and the OCI client;
+  - [crates/init](crates/init): the guest `/init`;
+  - [crates/cli](crates/cli): the CLI and verifier.
