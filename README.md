@@ -11,10 +11,10 @@ vContainer does this with as little code as possible:
 
 | Part | Size |
 |---|---|
-| Code we wrote that runs in the VM (`/init` and the protocol) | about 1,600 lines of Rust |
-| CLI and verifier, on your machine | about 1,000 lines of Rust |
-| Kernel configuration | `allnoconfig` plus 109 options |
-| Build scripts | about 200 lines of shell |
+| Code we wrote that runs in the VM (`/init` and the protocol) | about 1,450 lines of Rust |
+| CLI and verifier, on your machine | about 950 lines of Rust |
+| Kernel configuration | `allnoconfig` plus 107 options |
+| Build script | about 110 lines of shell |
 
 The VM boots a single file: a Linux kernel with a built-in initramfs whose only program is `/init`. There is no bootloader, root disk, systemd or container runtime. Until a container is deployed, the VM runs only the kernel and `/init`, which links musl and crates such as rustls, hpke and tar. The build is designed to be reproducible, and the file's measurement is predicted offline.
 
@@ -38,15 +38,14 @@ Requirements:
 
 ```sh
 git clone https://github.com/Mengyuan-L/vContainer && cd vContainer
-scripts/build-init.sh             # /init, static musl, built in a pinned container
-scripts/build-image.sh            # Linux 6.18.57 (sha256-checked) + /init -> out/BOOTX64.EFI, out/disk.raw
+scripts/build-image.sh            # in a pinned container: /init, Linux 6.18.57 (sha256-checked) -> out/BOOTX64.EFI, out/disk.raw
 cargo install --path crates/cli   # the vcontainer CLI
 vcontainer publish                # create the GCE image and record its expected measurements
 ```
 
-You do this once per release. It takes about 10 minutes, mostly building the kernel.
+You do this once per release. The first build downloads the kernel source and the build container's packages.
 
-The build scripts refuse uncommitted changes in `crates/`, `image/` and `scripts/`; pass `--dev` while hacking. They write the commit to `out/build-info.json`, so a release can be rebuilt from its commit, and `verify` prints that commit. `vcontainer measure` prints the expected measurements without publishing.
+`scripts/build-image.sh` refuses a checkout with uncommitted changes; pass `--dev` while hacking. A release builds the kernel from freshly extracted, sha256-checked source, and anyone can rebuild it byte for byte from its commit, which `publish` records and `verify` prints. `vcontainer measure` prints the expected measurements without publishing.
 
 Your owner key and session files live in `~/.config/vcontainer`. The key is created on first use.
 
@@ -55,15 +54,15 @@ Your owner key and session files live in `~/.config/vcontainer`. The key is crea
 ```console
 $ vcontainer run --session agent
 creating TDX confidential VM agent (c3-standard-4 in us-central1-a)
-waiting for http://34.28.55.190:7700 to boot and answer attestation
-session agent (34.28.55.190, us-central1-a): VERIFIED
+waiting for http://104.198.203.37:7700 to boot and answer attestation
+session agent (104.198.203.37, us-central1-a): VERIFIED
   ✓ Intel TDX quote: signature valid, TCB UpToDate (evaluation 20)
   ✓ fresh quote for our nonce; state Waiting
   ✓ TD attributes: debug off (0x10000000), XFAM 0x602e7
-  ✓ GCE instance 1839456890140757969 in us-central1-a (MROWNER)
+  ✓ GCE instance 4330080804156497207 in us-central1-a (MROWNER)
   ✓ firmware: MRTD c1ee9c16e3afc506… endorsed by Google (svn 2)
   ✓ host: a Google Cloud machine (PPID in Google's host registry)
-  ✓ boot image: kernel+initramfs+cmdline+/init with Authenticode b0a1735c…7e33db0 (release vcontainer-b0a1735ce42a, commit 55d07e68…)
+  ✓ boot image: kernel+initramfs+cmdline+/init with Authenticode 542ff6b7…21cffc12 (release vcontainer-542ff6b77f72, commit 32c2cb47…)
   ✓ ledger: fresh boot key, our owner key
   state: Waiting
 
@@ -71,15 +70,16 @@ $ vcontainer deploy --session agent us-central1-docker.pkg.dev/P/R/openrouter-ag
     -p 8080 --secret OPENROUTER_API_KEY=@openrouter.key
 launching us-central1-docker.pkg.dev/P/R/openrouter-agent@sha256:acdf834c…
 launch measured and committed; the VM is pulling the image
-session agent (34.28.55.190, us-central1-a): VERIFIED
+session agent (104.198.203.37, us-central1-a): VERIFIED
   ...
   ✓ launch measured before pull: us-central1-docker.pkg.dev/P/R/openrouter-agent@sha256:acdf834c…
   ✓ container sealed: manifest sha256:b38d15a0…
   state: Running
-  port 8080: http://34.28.55.190:8080
+  container: us-central1-docker.pkg.dev/P/R/openrouter-agent@sha256:acdf834c… env=[] secrets={"OPENROUTER_API_KEY"}
+  port 8080: http://104.198.203.37:8080
 ```
 
-On a `c3-standard-4`, `run` takes about 36 s, and deploying the 43 MB demo image takes about 20 s. The demo agent in [examples/openrouter-agent](examples/openrouter-agent) is 40 lines of Python. It answers chat requests through OpenRouter with a key read from `/run/secrets`.
+On a `c3-standard-4`, `run` takes about 35 s, and deploying the 43 MB demo image takes 20–30 s. The demo agent in [examples/openrouter-agent](examples/openrouter-agent) is 40 lines of Python. It answers chat requests through OpenRouter with a key read from `/run/secrets`.
 
 | Command | What it does |
 |---|---|
@@ -95,7 +95,7 @@ On a `c3-standard-4`, `run` takes about 36 s, and deploying the 43 MB demo image
 - `--secret NAME=@FILE`, `NAME=VALUE` or `NAME` (taken from your environment) seals a secret to the VM. It appears as `/run/secrets/NAME`.
 - `--user`, `--workdir` and `--entrypoint` override the image's settings.
 - `--quiet` keeps container output off the serial console.
-- `--resume` commits a launch that an interrupted `deploy` already sent. Repeat its `-p` options.
+- `--resume` finishes a `deploy` that was interrupted after its launch was sent but before the commit: it commits that launch and opens its saved ports.
 
 Images must be linux/amd64 and fit in RAM. The kernel is minimal; for example, it has no user namespaces or io_uring. A tag is resolved to a digest before launch, and the digest is what gets measured. Private images work on Artifact Registry and gcr.io, where your `gcloud` access token is sealed to the VM.
 
@@ -116,11 +116,11 @@ Only secret values and the registry token are encrypted, and the container itsel
 
 ## Status
 
-Version 0.1 works end to end on real hardware. The release built from commit 55d07e6 was rebuilt from scratch and matched byte for byte.
+Version 0.1 works end to end on real hardware. The release built from commit 32c2cb4 was rebuilt from scratch, also in a fresh clone, and matched byte for byte.
 
 Intel TDX on Google Cloud C3 is a demo platform, not part of the design. The design needs a measured boot, an append-only measurement register and quotes that bind data chosen by the guest. Supporting another platform means replacing the TDX and Google Cloud parts of `/init`, the verifier, the CLI's cloud commands, the kernel configuration and the image build.
 
-The code had three Codex review rounds and one adversarial multi-agent review. Every confirmed finding was fixed; [whitepaper §8](docs/whitepaper.md#8-security-analysis) summarizes them.
+The code had three Codex review rounds and one adversarial multi-agent review, and every confirmed finding was fixed. A later audit replaced the fixes that had piled up over those rounds with one mechanism each. [Whitepaper §8](docs/whitepaper.md#8-security-analysis) summarizes both.
 
 Limits:
 - One container runs per session, and its root filesystem lives in RAM.
