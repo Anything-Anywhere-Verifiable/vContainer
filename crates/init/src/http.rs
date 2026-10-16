@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use vcontainer_core::{unhex_array, CommitRequest, LaunchRequest, PORT};
 
 use crate::app::{ApiError, App};
@@ -24,7 +24,8 @@ pub fn serve(app: Arc<App>) -> Result<()> {
             continue;
         }
         let (app, slot) = (app.clone(), Slot(active.clone()));
-        std::thread::spawn(move || {
+        // On failure the closure, with its stream and slot, is dropped.
+        let _ = std::thread::Builder::new().spawn(move || {
             let _slot = slot; // released even if the handler panics
             let _ = handle(stream, &app);
         });
@@ -80,6 +81,16 @@ fn error_json(msg: &str) -> String {
 }
 
 fn read_request(s: &mut TcpStream) -> Result<(String, String, Vec<u8>)> {
+    // One deadline for the whole request, so slow senders cannot hold slots.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let read = |s: &mut TcpStream, buf: &mut [u8]| -> Result<usize> {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            bail!("request too slow");
+        }
+        s.set_read_timeout(Some(left))?;
+        Ok(s.read(buf)?)
+    };
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     let head_len = loop {
@@ -89,7 +100,7 @@ fn read_request(s: &mut TcpStream) -> Result<(String, String, Vec<u8>)> {
         if buf.len() > MAX_HEAD {
             bail!("request head too large");
         }
-        let n = s.read(&mut chunk)?;
+        let n = read(s, &mut chunk)?;
         if n == 0 {
             bail!("connection closed");
         }
@@ -113,7 +124,7 @@ fn read_request(s: &mut TcpStream) -> Result<(String, String, Vec<u8>)> {
     let mut body = buf[head_len..].to_vec();
     body.truncate(len);
     while body.len() < len {
-        let n = s.read(&mut chunk)?;
+        let n = read(s, &mut chunk)?;
         if n == 0 {
             bail!("truncated body");
         }

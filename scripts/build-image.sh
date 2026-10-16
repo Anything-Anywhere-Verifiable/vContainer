@@ -2,11 +2,12 @@
 # Build the vcontainer boot image: one EFI-stub PE (kernel + built-in
 # initramfs + built-in cmdline) on a GPT disk with a single ESP.
 #
-#   scripts/build-image.sh [--init PATH] [--clean]
+#   scripts/build-image.sh [--init PATH] [--clean] [--dev]
 #
 #   --init PATH  static binary to install as /init
 #                (default: target/x86_64-unknown-linux-musl/release/vcontainer-init)
 #   --clean      drop the cached kernel objects first (full rebuild)
+#   --dev        allow uncommitted changes (the result is not reproducible)
 #
 # Everything runs inside the vcontainer/builder:dev container (repo mounted at
 # /work, host uid). The kernel source is .cache/linux-6.18.57.tar.xz (sha256
@@ -19,6 +20,7 @@
 #   disk.raw             1 GiB GPT disk, ESP only, \EFI\BOOT\BOOTX64.EFI
 #   vcontainer.tar.gz    disk.raw packed for `gcloud compute images create`
 #   rtmr1.txt            the RTMR1 predicted by tools/predict-rtmr1.py
+#   build-info.json      commit, dirty flag, SOURCE_DATE_EPOCH, builder image id
 set -euo pipefail
 
 KVER=6.18.57
@@ -133,10 +135,12 @@ fi
 # ---------------------------------------------------------------------------
 init=target/x86_64-unknown-linux-musl/release/vcontainer-init
 clean=0
+dev=0
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 		--init) init="${2:?--init needs a path}"; shift 2 ;;
 		--clean) clean=1; shift ;;
+		--dev) dev=1; shift ;;
 		-h | --help) sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed -e '$d' -e 's/^# \{0,1\}//'; exit 0 ;;
 		*) die "unknown argument: $1" ;;
 	esac
@@ -146,8 +150,16 @@ cd "$repo"
 [[ -f "$init" ]] || die "missing init binary $init (build it, or pass --init PATH)"
 file -b "$init" 2>/dev/null | grep -q 'statically linked\|static-pie' ||
 	echo "build-image: warning: $init does not look statically linked" >&2
-[[ -f ".cache/linux-$KVER.tar.xz" ]] ||
-	die "missing .cache/linux-$KVER.tar.xz (https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$KVER.tar.xz)"
+if [[ ! -f ".cache/linux-$KVER.tar.xz" ]]; then
+	mkdir -p .cache
+	curl -fL --retry 3 -o ".cache/linux-$KVER.tar.xz.part" "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$KVER.tar.xz"
+	echo "$KSRC_SHA256  .cache/linux-$KVER.tar.xz.part" | sha256sum -c --quiet - || die "kernel source sha256 mismatch"
+	mv ".cache/linux-$KVER.tar.xz.part" ".cache/linux-$KVER.tar.xz"
+fi
+# A release must be rebuildable from a commit (--dev allows a dirty tree).
+dirty=false
+[[ -z "$(git status --porcelain -- crates image scripts Cargo.toml Cargo.lock rust-toolchain.toml 2>/dev/null)" ]] || dirty=true
+[[ "$dirty" == false || "$dev" == 1 ]] || die "uncommitted changes in the build inputs; commit them, or pass --dev"
 
 if [[ -z "${SOURCE_DATE_EPOCH:-}" ]]; then
 	SOURCE_DATE_EPOCH="$(git log -1 --format=%ct 2>/dev/null || true)"
@@ -164,3 +176,7 @@ chmod 0755 out/init
 
 docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -e SOURCE_DATE_EPOCH \
 	-v "$repo:/work" -w /work "$BUILDER" bash scripts/build-image.sh --inside
+printf '{"commit": "%s", "dirty": %s, "source_date_epoch": %s, "builder": "%s"}\n' \
+	"$(git rev-parse HEAD 2>/dev/null || echo unknown)" "$dirty" "$SOURCE_DATE_EPOCH" \
+	"$(docker image inspect -f '{{.Id}}' "$BUILDER")" >out/build-info.json
+cat out/build-info.json

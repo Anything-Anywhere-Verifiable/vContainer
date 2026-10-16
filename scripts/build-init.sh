@@ -2,6 +2,10 @@
 # Builds the guest /init (static musl) inside the pinned builder container.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+if [[ "${1:-}" != --dev && -n "$(git status --porcelain -- crates Cargo.toml Cargo.lock rust-toolchain.toml)" ]]; then
+    echo "build-init: uncommitted changes; commit them, or pass --dev" >&2
+    exit 1
+fi
 docker build -q -t vcontainer/builder:dev -f image/Containerfile image >/dev/null
 mkdir -p .cache/cargo
 docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/work" -w /work \

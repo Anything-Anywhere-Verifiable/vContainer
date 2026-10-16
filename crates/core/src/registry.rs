@@ -30,7 +30,7 @@ impl ImageRef {
     pub fn parse(s: &str) -> Result<Self> {
         let (rest, digest) = match s.split_once('@') {
             Some((r, d)) => {
-                ensure!(d.starts_with("sha256:") && d.len() == 71, "unsupported digest {d}");
+                ensure!(valid_digest(d), "unsupported digest {d}");
                 (r, Some(d.to_string()))
             }
             None => (s, None),
@@ -47,7 +47,14 @@ impl ImageRef {
             _ => (path, None),
         };
         let repo = if registry == "docker.io" && !repo.contains('/') { format!("library/{repo}") } else { repo };
-        ensure!(!repo.is_empty(), "empty repository in {s}");
+        ensure!(valid_host(&registry), "invalid registry host {registry:?}");
+        ensure!(
+            !repo.is_empty() && repo.split('/').all(|c| !c.is_empty() && c.chars().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || "._-".contains(ch))),
+            "invalid repository {repo:?}"
+        );
+        if let Some(t) = &tag {
+            ensure!(!t.is_empty() && t.len() <= 128 && t.chars().all(|ch| ch.is_ascii_alphanumeric() || "._-".contains(ch)), "invalid tag {t:?}");
+        }
         let tag = if tag.is_none() && digest.is_none() { Some("latest".to_string()) } else { tag };
         Ok(ImageRef { registry, repo, tag, digest })
     }
@@ -67,6 +74,20 @@ impl ImageRef {
         let h = self.registry.as_str();
         h == "gcr.io" || h.ends_with(".gcr.io") || (h.ends_with("-docker.pkg.dev") && !h.contains(['/', '@', ':']))
     }
+}
+
+/// `host[:port]` with DNS characters only (no userinfo, path, query or fragment).
+fn valid_host(h: &str) -> bool {
+    let (host, port) = h.split_once(':').unwrap_or((h, "1"));
+    !host.is_empty()
+        && host.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+        && !port.is_empty()
+        && port.chars().all(|c| c.is_ascii_digit())
+}
+
+/// `sha256:` followed by 64 lowercase hex digits.
+pub fn valid_digest(d: &str) -> bool {
+    d.strip_prefix("sha256:").is_some_and(|h| h.len() == 64 && h.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)))
 }
 
 pub fn sha256_digest(b: &[u8]) -> String {
@@ -149,7 +170,8 @@ impl Registry {
     pub fn new(image: &ImageRef, creds: Option<(String, String)>) -> Self {
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .timeout_connect(Some(Duration::from_secs(30)))
-            .timeout_recv_body(Some(Duration::from_secs(600)))
+            .timeout_recv_response(Some(Duration::from_secs(60)))
+            .timeout_recv_body(Some(Duration::from_secs(3600)))
             .http_status_as_error(false)
             .build()
             .into();
@@ -222,24 +244,25 @@ impl Registry {
         Ok(())
     }
 
-    /// Fetches a manifest by tag or digest. Returns (bytes, digest of bytes).
-    /// A digest reference is checked against the bytes received.
-    pub fn manifest(&mut self, reference: &str) -> Result<(Vec<u8>, String)> {
+    fn fetch_manifest(&mut self, reference: &str) -> Result<Vec<u8>> {
         let url = self.url("manifests", reference);
         let mut resp = self.get(&url, MANIFEST_ACCEPT)?;
-        let body = resp.body_mut().with_config().limit(MAX_MANIFEST).read_to_vec()?;
-        let digest = sha256_digest(&body);
-        // A tag has no ':'; anything else is a digest and must be ours.
-        if reference.contains(':') {
-            ensure!(digest == reference, "manifest digest mismatch: wanted {reference}, got {digest}");
-        }
-        Ok((body, digest))
+        Ok(resp.body_mut().with_config().limit(MAX_MANIFEST).read_to_vec()?)
+    }
+
+    /// Fetches the manifest with this digest, checked against the bytes.
+    pub fn manifest(&mut self, digest: &str) -> Result<Vec<u8>> {
+        ensure!(valid_digest(digest), "unsupported manifest digest {digest:?}");
+        let body = self.fetch_manifest(digest)?;
+        let got = sha256_digest(&body);
+        ensure!(got == digest, "manifest digest mismatch: wanted {digest}, got {got}");
+        Ok(body)
     }
 
     /// Streams a blob into `out`, failing unless it has exactly `size` bytes
     /// with digest `digest`.
     pub fn blob(&mut self, digest: &str, size: u64, out: &mut dyn Write) -> Result<()> {
-        ensure!(digest.starts_with("sha256:"), "unsupported blob digest {digest}");
+        ensure!(valid_digest(digest), "unsupported blob digest {digest:?}");
         let url = self.url("blobs", digest);
         let resp = self.get(&url, "*/*")?;
         let mut reader = resp.into_body().into_reader().take(size + 1);
@@ -262,10 +285,13 @@ impl Registry {
         Ok(())
     }
 
-    /// Resolves the reference to (pinned index-or-manifest digest).
+    /// The digest the reference names (a tag is resolved by the registry).
     pub fn resolve(&mut self) -> Result<String> {
-        let reference = self.image.digest.clone().or(self.image.tag.clone()).unwrap();
-        Ok(self.manifest(&reference)?.1)
+        match (self.image.digest.clone(), self.image.tag.clone()) {
+            (Some(d), _) => self.manifest(&d).map(|_| d),
+            (None, Some(t)) => Ok(sha256_digest(&self.fetch_manifest(&t)?)),
+            (None, None) => bail!("no tag or digest"),
+        }
     }
 }
 
@@ -294,6 +320,8 @@ mod tests {
         assert_eq!(r.digest.as_deref(), Some(d.as_str()));
         assert!(r.is_google());
         assert!(!ImageRef::parse("evilgcr.io/x/y:1").unwrap().is_google());
+        assert!(ImageRef::parse("attacker.example?.gcr.io/p/i:tag").is_err());
+        assert!(ImageRef::parse("user@host.gcr.io/p/i:tag").is_err());
         assert!(ImageRef::parse("us.gcr.io/x/y:1").unwrap().is_google());
         let r = ImageRef::parse("localhost:5000/x/y").unwrap();
         assert_eq!((r.registry.as_str(), r.repo.as_str(), r.tag.as_deref()), ("localhost:5000", "x/y", Some("latest")));
@@ -309,10 +337,10 @@ mod live {
         let r = ImageRef::parse(image).unwrap();
         let mut reg = Registry::new(&r, creds);
         let digest = reg.resolve().unwrap();
-        let mut m: Manifest = serde_json::from_slice(&reg.manifest(&digest).unwrap().0).unwrap();
+        let mut m: Manifest = serde_json::from_slice(&reg.manifest(&digest).unwrap()).unwrap();
         if m.is_index() {
             let d = m.linux_amd64().unwrap().digest.clone();
-            m = serde_json::from_slice(&reg.manifest(&d).unwrap().0).unwrap();
+            m = serde_json::from_slice(&reg.manifest(&d).unwrap()).unwrap();
         }
         let c = m.config.unwrap();
         let mut raw = Vec::new();

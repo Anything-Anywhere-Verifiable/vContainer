@@ -17,8 +17,11 @@ pub struct Release {
     pub project: String,
     pub pe_authenticode_sha384: String,
     pub gpt_event_sha384: String,
-    /// Accepted RTMR1 values (normal boot, and one ExitBootServices retry).
-    pub rtmr1: Vec<String>,
+    /// Source commit and build time the image was built from (build-info.json).
+    #[serde(default)]
+    pub commit: Option<String>,
+    #[serde(default)]
+    pub source_date_epoch: Option<u64>,
 }
 
 /// The GCE instance a quote must come from (TDX MROWNER is SHA-384 of these).
@@ -43,8 +46,13 @@ pub struct Policy {
     pub config: Option<String>,
     pub min_tcb_eval_num: u32,
     /// Lowest acceptable security version of Google's TDX firmware.
-    #[serde(default)]
+    #[serde(default = "default_fw_svn")]
     pub min_fw_svn: u64,
+}
+
+/// Google's TDX firmware security version as of October 2026.
+pub fn default_fw_svn() -> u64 {
+    2
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

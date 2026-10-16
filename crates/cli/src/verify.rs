@@ -28,15 +28,23 @@ pub fn nonce() -> [u8; 32] {
     crypto::random32()
 }
 
+/// Text from the network, made safe to print (no control characters).
+fn untrusted(b: &[u8]) -> String {
+    String::from_utf8_lossy(b).chars().filter(|c| !c.is_control()).take(300).collect()
+}
+
 pub fn fetch_evidence(url: &str, nonce: &[u8; 32]) -> Result<Evidence> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(60)))
         .http_status_as_error(false)
         .build()
         .into();
-    let mut r = agent.get(format!("{url}/v1/evidence?nonce={}", hex(nonce))).call()?;
+    let mut r = agent
+        .get(format!("{url}/v1/evidence?nonce={}", hex(nonce)))
+        .call()
+        .with_context(|| format!("no answer from {url} (if the VM restarted, `vcontainer run --session NAME` reconnects)"))?;
     let body = r.body_mut().with_config().limit(32 << 20).read_to_vec()?;
-    ensure!(r.status() == 200, "evidence: HTTP {}: {}", r.status(), String::from_utf8_lossy(&body));
+    ensure!(r.status() == 200, "evidence: HTTP {}: {}", r.status(), untrusted(&body));
     Ok(serde_json::from_slice(&body)?)
 }
 
@@ -47,8 +55,8 @@ pub fn post(url: &str, path: &str, body: &impl serde::Serialize) -> Result<()> {
         .build()
         .into();
     let mut r = agent.post(format!("{url}{path}")).header("Content-Type", "application/json").send(serde_json::to_vec(body)?)?;
-    let text = r.body_mut().read_to_string().unwrap_or_default();
-    ensure!(r.status() == 200, "{path}: HTTP {}: {text}", r.status());
+    let text = r.body_mut().with_config().limit(1 << 20).read_to_vec().unwrap_or_default();
+    ensure!(r.status() == 200, "{path}: HTTP {}: {}", r.status(), untrusted(&text));
     Ok(())
 }
 
@@ -70,8 +78,8 @@ pub fn verify(ev: &Evidence, nonce: &[u8; 32], policy: &Policy) -> Result<Verifi
     ensure!(qv.advisory_ids.is_empty(), "TCB advisories {:?}", qv.advisory_ids);
     ensure!(eval_num >= policy.min_tcb_eval_num as u64, "TCB evaluation data number {eval_num} < {}", policy.min_tcb_eval_num);
     let td = match &qv.report {
-        Report::TD10(r) => r.clone(),
-        Report::TD15(r) => r.base.clone(),
+        Report::TD10(r) => *r,
+        Report::TD15(r) => r.base,
         _ => bail!("not a TD quote"),
     };
     claims.push(format!("Intel TDX quote: signature valid, TCB UpToDate (evaluation {eval_num})"));
@@ -99,12 +107,20 @@ pub fn verify(ev: &Evidence, nonce: &[u8; 32], policy: &Policy) -> Result<Verifi
     claims.push("host: a Google Cloud machine (PPID in Google's host registry)".into());
 
     // 5. Boot chain: exactly the published PE, nothing in RTMR2.
-    let rtmr1 = hex(&td.rt_mr1);
-    if !policy.release.rtmr1.contains(&rtmr1) {
-        bail!("RTMR1 {rtmr1} is not release {}:\n{}", policy.release.image, crate::ccel::describe(&ev.ccel, 2));
+    // The accepted RTMR1 is derived from the release's PE and GPT digests, so
+    // the Authenticode we print is the one that was checked.
+    let r = &policy.release;
+    let expected = crate::measure::rtmr1(&unhex_array(&r.pe_authenticode_sha384)?, &unhex_array(&r.gpt_event_sha384)?);
+    if !expected.contains(&td.rt_mr1) {
+        bail!("RTMR1 {} is not the expected boot image:\n{}", hex(&td.rt_mr1), crate::ccel::describe(&ev.ccel, 2));
     }
     ensure!(td.rt_mr2 == [0; 48], "RTMR2 is not empty:\n{}", crate::ccel::describe(&ev.ccel, 3));
-    claims.push(format!("boot image: {} (kernel+initramfs+cmdline+/init, Authenticode {}…)", policy.release.image, &policy.release.pe_authenticode_sha384[..16]));
+    claims.push(format!(
+        "boot image: kernel+initramfs+cmdline+/init with Authenticode {} (release {}{})",
+        r.pe_authenticode_sha384,
+        r.image,
+        r.commit.as_deref().map(|c| format!(", commit {c}")).unwrap_or_default()
+    ));
 
     // 6. Ledger in RTMR3.
     ensure!(replay(&ev.ledger) == td.rt_mr3, "ledger does not replay to RTMR3");

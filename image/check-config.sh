@@ -14,6 +14,9 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 final="${1:?usage: check-config.sh FINAL_DOT_CONFIG [MINICONFIG] [MUST_BE_OFF]}"
 mini="${2:-$here/kernel.config}"
 off="${3:-$here/kernel.must-be-off}"
+for f in "$final" "$mini" "$off"; do
+	[[ -r "$f" ]] || { echo "check-config: cannot read $f" >&2; exit 2; }
+done
 
 fail=0
 # Requested values: compare the whole "CONFIG_X=value" line.
@@ -28,6 +31,7 @@ done < <(grep -E '^CONFIG_[A-Za-z0-9_]+=' "$mini")
 
 # Must-be-off symbols: absent or "is not set" are both fine.
 while IFS= read -r sym; do
+	[[ "$sym" =~ ^[A-Z0-9_]+$ ]] || { echo "check-config: bad must-be-off entry '$sym'" >&2; exit 2; }
 	if got="$(grep -E "^CONFIG_${sym}=" "$final")"; then
 		printf 'FORBIDDEN %s\n  want: # CONFIG_%s is not set\n  got:  %s\n' "$sym" "$sym" "$got"
 		fail=1

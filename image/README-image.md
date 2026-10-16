@@ -4,14 +4,13 @@ One reproducible PE file, `BOOTX64.EFI` (a Linux 6.18.57 EFI-stub kernel with a
 built-in initramfs holding only `/init`, plus a built-in command line), on a
 1 GiB GPT disk with a single ESP. Google's TDX firmware loads it from
 `\EFI\BOOT\BOOTX64.EFI` and measures its Authenticode SHA-384 into RTMR1.
-Design: `ccrun-design/DESIGN.md` §4.1, §4.2, §14.
+Design: `docs/design/DESIGN.md` §4.1, §4.2, §14.
 
 | File | Role |
 |---|---|
 | `image/kernel.config` | miniconfig for `make allnoconfig KCONFIG_ALLCONFIG=…`; every addition is commented |
 | `image/kernel.must-be-off` | symbols that must not be `=y`/`=m` |
 | `image/check-config.sh` | fails on any requested value missing from, or forbidden symbol present in, the final `.config` |
-| `image/patches/0001-x86-tdx-x2apic-without-ir.patch` | needed to boot TDX with `nopv` (see "Surprises" #1) |
 | `scripts/build-image.sh` | builds everything in `vcontainer/builder:dev`; writes `out/` |
 | `scripts/qemu-boot.sh` | QEMU/KVM + OVMF sanity boot of `out/disk.raw` (not TDX) |
 | `tools/tdx-probe/` | M0 probe used as `/init` (`build.sh`, `gce-run.sh`) |
@@ -148,6 +147,10 @@ Boot0001 `a25333c7…` ("UEFI nvme_card-pd"), Boot0000 `23ada07f…`. No
    x2APIC mode; `APIC: Switched APIC routing to: physical x2apic`). Without
    KVM's MSI extended-destination-ID feature, shapes with APIC IDs ≥ 255 would
    lose CPUs; only c3-standard-4/8 were tested.
+   **Decision (2026-10-16):** no kernel patch. The image uses `KVM_GUEST=y`
+   without `nopv`: the host's default configuration (like its ACPI tables) is
+   trusted, KVM's hook covers large shapes, and TDX keeps the clocksource on
+   `tsc`. The patch and the `nopv` probe logs are kept only in git history.
 2. **Kernel DHCP and GCE's /32: the default route appears by accident.** IP_PNP
    uses 255.255.255.255 as its "no netmask" sentinel, so GCE's /32 is treated as
    absent: `IP-Config: Guessing netmask 255.0.0.0`. The guessed classful /8 puts
@@ -180,7 +183,7 @@ Boot0001 `a25333c7…` ("UEFI nvme_card-pd"), Boot0000 `23ada07f…`. No
 
 ## Open
 
-- Shapes with ≥ 255 APIC IDs (c3-standard-88/176) under the x2APIC patch;
-  the alternative is `KVM_GUEST=y` without `nopv` (both are design changes).
-- Whether `/init` should replace IP_PNP with its own DHCP (Surprises #2, #3).
-- RTMR0 appraisal still needs the ACPI-triple allowlist (unchanged by M0).
+- Resolved: `KVM_GUEST=y` without `nopv` (see Surprises #1).
+- Resolved: `/init` keeps IP_PNP and adds the routes itself, treating EEXIST
+  as success, and resets the hostname.
+- RTMR0 is not appraised: the host's default configuration is trusted.

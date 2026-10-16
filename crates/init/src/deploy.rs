@@ -35,14 +35,14 @@ fn deploy(app: &Arc<App>) -> Result<()> {
     let mut reg = Registry::new(&image, creds);
 
     crate::sys::log(&format!("pulling {}", config.image));
-    let (body, _) = reg.manifest(&digest)?;
-    let mut manifest: Manifest = serde_json::from_slice(&body)?;
+    let mut manifest: Manifest = serde_json::from_slice(&reg.manifest(&digest)?)?;
     let mut manifest_digest = digest.clone();
     if manifest.is_index() {
         manifest_digest = manifest.linux_amd64()?.digest.clone();
-        manifest = serde_json::from_slice(&reg.manifest(&manifest_digest)?.0)?;
+        manifest = serde_json::from_slice(&reg.manifest(&manifest_digest)?)?;
     }
     let cfg = manifest.config.as_ref().context("manifest has no config")?;
+    ensure!(cfg.size <= 4 << 20, "image config too large");
     let mut raw = Vec::new();
     reg.blob(&cfg.digest, cfg.size, &mut raw)?;
     let image_config: ImageConfig = serde_json::from_slice(&raw)?;
@@ -50,9 +50,13 @@ fn deploy(app: &Arc<App>) -> Result<()> {
     crate::sys::mount("tmpfs", ROOT, "tmpfs", 0, Some("mode=0755,size=90%"))?;
     for (i, layer) in manifest.layers.iter().enumerate() {
         crate::sys::log(&format!("layer {}/{} {} ({} bytes)", i + 1, manifest.layers.len(), layer.digest, layer.size));
-        {
+        for attempt in 1..=3 {
             let mut f = fs::File::create(LAYER)?;
-            reg.blob(&layer.digest, layer.size, &mut f)?;
+            match reg.blob(&layer.digest, layer.size, &mut f) {
+                Ok(()) => break,
+                Err(e) if attempt < 3 => crate::sys::log(&format!("retrying {}: {e:#}", layer.digest)),
+                Err(e) => return Err(e),
+            }
         }
         unpack(LAYER).with_context(|| format!("unpack {}", layer.digest))?;
         fs::remove_file(LAYER)?;

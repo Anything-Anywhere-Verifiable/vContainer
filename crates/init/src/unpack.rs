@@ -14,6 +14,7 @@ use std::path::{Component, Path, PathBuf};
 use tar::{Archive, Entry, EntryType};
 
 use crate::sys::{check, cstr};
+use std::os::unix::ffi::OsStrExt;
 
 pub fn main(root: &str) -> Result<()> {
     check(unsafe { libc::chroot(cstr(root).as_ptr()) }, "chroot")?;
@@ -23,14 +24,20 @@ pub fn main(root: &str) -> Result<()> {
 
     each_entry(&mut layer, len, |_, path| {
         let (Some(name), Some(dir)) = (path.file_name().and_then(|n| n.to_str()), path.parent()) else { return Ok(()) };
+        let d = Path::new("/").join(dir);
+        if !name.starts_with(".wh.") || fs::canonicalize(&d).ok().as_deref() != Some(d.as_path()) {
+            // Not a whiteout, or its directory is (via) a lower-layer symlink
+            // that this layer replaces in pass 2: nothing below it to delete.
+            return Ok(());
+        }
         if name == ".wh..wh..opq" {
-            if let Ok(rd) = fs::read_dir(Path::new("/").join(dir)) {
+            if let Ok(rd) = fs::read_dir(&d) {
                 for child in rd {
                     remove(&child?.path())?;
                 }
             }
         } else if let Some(target) = name.strip_prefix(".wh.") {
-            remove(&Path::new("/").join(dir).join(target))?;
+            remove(&d.join(target))?;
         }
         Ok(())
     })?;
@@ -51,9 +58,14 @@ pub fn main(root: &str) -> Result<()> {
         }
         if kind == EntryType::Fifo {
             let mode = entry.header().mode()? & 0o7777;
-            check(unsafe { libc::mkfifo(cstr(full.to_str().unwrap()).as_ptr(), mode) }, "mkfifo")?;
+            if let Some(parent) = full.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let c = std::ffi::CString::new(full.as_os_str().as_bytes())?;
+            check(unsafe { libc::mkfifo(c.as_ptr(), mode) }, "mkfifo")?;
             let (uid, gid) = (entry.header().uid()? as u32, entry.header().gid()? as u32);
             std::os::unix::fs::lchown(&full, Some(uid), Some(gid))?;
+            fs::set_permissions(&full, std::os::unix::fs::PermissionsExt::from_mode(mode))?;
             return Ok(());
         }
         entry.unpack_in("/").with_context(|| format!("extract {}", path.display()))?;

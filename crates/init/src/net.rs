@@ -12,10 +12,12 @@ use crate::sys::{check, cstr};
 
 pub fn setup() -> Result<()> {
     let log = kernel_log()?;
+    // The host answers the hypervisor CPUID leaves; only KVM's paravirtual
+    // paths are part of the trusted default configuration.
+    ensure!(log.contains("Hypervisor detected: KVM"), "the kernel did not detect KVM as the hypervisor");
     let line = log
         .lines()
-        .filter(|l| l.contains("device=") && l.contains(" gw="))
-        .last()
+        .rfind(|l| l.contains("device=") && l.contains(" gw="))
         .context("kernel IP autoconfiguration did not complete (no IP-Config line)")?;
     let dev = field(line, "device=")?;
     let gw: Ipv4Addr = field(line, "gw=")?.parse().context("bad gateway in IP-Config line")?;

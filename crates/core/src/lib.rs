@@ -386,6 +386,7 @@ pub mod b64 {
         Ok(STANDARD.decode(s)?)
     }
 
+    #[allow(clippy::ptr_arg)] // serde's `with` passes &Vec<u8>
     pub fn serialize<S: Serializer>(b: &Vec<u8>, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_str(&encode(b))
     }
@@ -403,7 +404,7 @@ pub fn hex(b: &[u8]) -> String {
 pub fn unhex(s: &str) -> Result<Vec<u8>> {
     let digit = |c: u8| (c as char).to_digit(16).map(|d| d as u8).context("invalid hex");
     let b = s.as_bytes();
-    ensure!(b.len() % 2 == 0, "odd-length hex");
+    ensure!(b.len().is_multiple_of(2), "odd-length hex");
     b.chunks(2).map(|p| Ok(digit(p[0])? << 4 | digit(p[1])?)).collect()
 }
 

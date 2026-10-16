@@ -27,8 +27,9 @@ pub fn project_number(project: &str) -> Result<u64> {
     Ok(gcloud(&["projects", "describe", project, "--format=value(projectNumber)"])?.parse()?)
 }
 
+/// A freshly minted access token (about an hour left), for a sealed pull.
 pub fn access_token() -> Result<String> {
-    gcloud(&["auth", "print-access-token"])
+    gcloud(&["config", "config-helper", "--force-auth-refresh", "--format=value(credential.access_token)"])
 }
 
 #[derive(Deserialize)]

@@ -23,8 +23,6 @@ use state::{Policy, Session};
 
 /// Oldest acceptable Intel TCB evaluation data number.
 const MIN_TCB_EVAL_NUM: u32 = 20;
-/// Oldest acceptable security version of Google's TDX firmware (October 2026).
-const MIN_FW_SVN: u64 = 2;
 
 #[derive(Parser)]
 #[command(name = "vcontainer", version, about = "Run containers in verified Intel TDX confidential VMs on Google Cloud")]
@@ -53,7 +51,11 @@ enum Cmd {
         #[arg(long)]
         session: String,
         /// Image reference; a tag is resolved to a digest before launch.
-        image: String,
+        #[arg(required_unless_present = "resume")]
+        image: Option<String>,
+        /// Start the launch an interrupted deploy already sent, instead of a new one.
+        #[arg(long)]
+        resume: bool,
         /// Environment variable KEY=VALUE (measured and public: not for secrets).
         #[arg(short, long = "env")]
         env: Vec<String>,
@@ -70,7 +72,8 @@ enum Cmd {
         workdir: Option<String>,
         #[arg(long)]
         entrypoint: Option<String>,
-        /// Do not copy the container's output to the serial console.
+        /// Do not copy the container's output to the serial console (by default
+        /// it goes there, where the host and project members can read it).
         #[arg(long)]
         quiet: bool,
         /// Command and arguments (after --).
@@ -120,7 +123,7 @@ fn main() {
     let cli = Cli::parse();
     let result = match cli.cmd {
         Cmd::Run { session, zone, machine_type, allow_from } => run(&session, &zone, &machine_type, allow_from),
-        Cmd::Deploy { session, image, env, secrets, ports, user, workdir, entrypoint, quiet, cmd } => {
+        Cmd::Deploy { session, image, resume, env, secrets, ports, user, workdir, entrypoint, quiet, cmd } => {
             let config = Config {
                 image: String::new(),
                 entrypoint: entrypoint.map(|e| vec![e]),
@@ -132,7 +135,7 @@ fn main() {
                 registry_token: false,
                 logs: if quiet { Logs::None } else { Logs::Serial },
             };
-            deploy(&session, &image, config, &secrets, &ports)
+            deploy(&session, image.as_deref(), resume, config, &secrets, &ports)
         }
         Cmd::Verify { session, url, policy, export_policy } => verify_cmd(session, url, policy, export_policy),
         Cmd::Ls => ls(),
@@ -150,8 +153,12 @@ fn main() {
 fn run(name: &str, zone: &str, machine_type: &str, allow_from: Option<String>) -> Result<()> {
     state::check_name(name)?;
     let owner = state::owner_key()?;
-    let release = state::release()?;
     let previous = state::load_session(name).ok();
+    // A session keeps the release its disk was created from.
+    let release = match &previous {
+        Some(p) => p.policy.release.clone(),
+        None => state::release()?,
+    };
     let zone = previous.as_ref().map_or(zone, |p| p.zone.as_str()).to_string();
     let project = match &previous {
         Some(p) => p.project.clone(),
@@ -162,6 +169,8 @@ fn run(name: &str, zone: &str, machine_type: &str, allow_from: Option<String>) -
         (None, Some(p)) => p.source.clone(),
         (None, None) => format!("{}/32", gcp::my_ip()?),
     };
+    gcp::ensure_network(&project)?;
+    gcp::ensure_firewall(&project, name, previous.as_ref().map_or(&[][..], |p| &p.ports), &source)?;
     let inst = match gcp::instance(&project, name, &zone)? {
         Some(i) if i.status == "RUNNING" => i,
         Some(i) => {
@@ -170,8 +179,6 @@ fn run(name: &str, zone: &str, machine_type: &str, allow_from: Option<String>) -
             gcp::instance(&project, name, &zone)?.context("instance disappeared")?
         }
         None => {
-            gcp::ensure_network(&project)?;
-            gcp::ensure_firewall(&project, name, &[], &source)?;
             eprintln!("creating TDX confidential VM {name} ({machine_type} in {zone})");
             gcp::create_instance(&project, name, &zone, machine_type, &release.image, &release.project, &crypto::owner_metadata(&owner))?;
             gcp::instance(&project, name, &zone)?.context("instance disappeared")?
@@ -185,7 +192,7 @@ fn run(name: &str, zone: &str, machine_type: &str, allow_from: Option<String>) -
         instance: Some(instance),
         config: previous.as_ref().and_then(|p| p.policy.config.clone()),
         min_tcb_eval_num: MIN_TCB_EVAL_NUM,
-        min_fw_svn: MIN_FW_SVN,
+        min_fw_svn: state::default_fw_svn(),
     };
     let mut s = Session {
         name: name.into(),
@@ -195,13 +202,16 @@ fn run(name: &str, zone: &str, machine_type: &str, allow_from: Option<String>) -
         ip: inst.ip().context("instance has no external IP")?,
         source,
         ports: previous.as_ref().map(|p| p.ports.clone()).unwrap_or_default(),
-        pending: None,
+        pending: previous.as_ref().and_then(|p| p.pending.clone()),
         policy,
     };
+    state::save_session(&s)?; // so `rm` works even if verification fails
     eprintln!("waiting for {} to boot and answer attestation", s.url());
     let v = wait_verified(&s, Duration::from_secs(300))?;
     if v.status.state == State::Waiting {
-        s.policy.config = None; // a fresh boot: whatever ran before is gone
+        // A fresh boot: whatever ran or was pending before is gone.
+        s.policy.config = None;
+        s.pending = None;
     }
     state::save_session(&s)?;
     report(&s, &v);
@@ -273,22 +283,28 @@ fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
 }
 
-fn deploy(name: &str, image: &str, config: Config, secret_specs: &[String], ports: &[u16]) -> Result<()> {
+fn deploy(name: &str, image: Option<&str>, resume: bool, config: Config, secret_specs: &[String], ports: &[u16]) -> Result<()> {
     let owner = state::owner_key()?;
     let mut s = state::load_session(name)?;
     let nonce = verify::nonce();
     let v = verify::verify(&verify::fetch_evidence(&s.url(), &nonce)?, &nonce, &s.policy)?;
-    let payload = match (v.status.state, &s.pending) {
-        (State::Waiting, _) => {
+    let payload = match (v.status.state, &s.pending, resume) {
+        (State::Waiting, _, false) => {
             eprintln!("session verified: {}", v.claims.join("; "));
-            launch(&mut s, &owner, &v.boot, image, config, secret_specs)?
+            launch(&mut s, &owner, &v.boot, image.context("IMAGE is required")?, config, secret_specs)?
         }
-        (State::Starting, Some(p)) => {
-            eprintln!("resuming the launch sent earlier (its response was lost)");
+        (State::Starting, Some(p), true) => {
+            eprintln!("resuming the launch sent earlier: {}", v.config.as_ref().map_or("?", |c| c.image.as_str()));
             b64::decode(p)?
         }
-        (st, _) => bail!(
-            "session {name} already ran a container (state {st:?}); use a new session, or `vcontainer rm --session {name}` and run it again"
+        (State::Starting, Some(_), false) => bail!(
+            "an earlier deploy to {name} was interrupted after its launch ({}); start it with `vcontainer deploy --session {name} --resume`, or discard it with `vcontainer rm --session {name}`",
+            v.config.as_ref().map_or("?", |c| c.image.as_str())
+        ),
+        (_, _, true) => bail!("session {name} has no interrupted launch to resume (state {:?})", v.status.state),
+        (st, _, _) => bail!(
+            "session {name} already ran a container (state {st:?}). For a fresh boot of the same VM: `gcloud compute instances reset {name} --zone {}` then `vcontainer run --session {name}`",
+            s.zone
         ),
     };
 
@@ -301,36 +317,42 @@ fn deploy(name: &str, image: &str, config: Config, secret_specs: &[String], port
         "the session did not measure our launch (state {:?})",
         v2.status.state
     );
-    let commit = CommitRequest { boot_id: hex(&v.boot.boot_id), sig: crypto::sign(&owner, &commit_message(&v.boot.boot_id, &payload)) };
-    verify::post(&s.url(), "/v1/commit", &commit)?;
-    s.pending = None;
-    eprintln!("launch measured and committed; the VM is pulling the image");
     if !ports.is_empty() {
         s.ports = ports.to_vec();
         gcp::ensure_firewall(&s.project, name, &s.ports, &s.source)?;
+        state::save_session(&s)?;
     }
+    let commit = CommitRequest { boot_id: hex(&v.boot.boot_id), sig: crypto::sign(&owner, &commit_message(&v.boot.boot_id, &payload)) };
+    verify::post(&s.url(), "/v1/commit", &commit)?;
+    s.pending = None;
     state::save_session(&s)?;
+    eprintln!("launch measured and committed; the VM is pulling the image");
 
     let start = Instant::now();
     loop {
         std::thread::sleep(Duration::from_secs(3));
+        if start.elapsed() > Duration::from_secs(1800) {
+            bail!("the container did not start within 30 minutes; see `vcontainer logs --session {name}`");
+        }
         let n = verify::nonce();
-        let ev = verify::fetch_evidence(&s.url(), &n)?;
+        let Ok(ev) = verify::fetch_evidence(&s.url(), &n) else { continue };
         // Poll on the (unverified) status; verify fully once it settles.
         let st: Status = serde_json::from_slice(&ev.status)?;
+        if st.state == State::Waiting {
+            bail!("the VM restarted during the pull; run `vcontainer run --session {name}` and deploy again");
+        }
         if matches!(st.state, State::Running | State::Exited | State::Failed) {
             let v = verify::verify(&ev, &n, &s.policy)?;
             report(&s, &v);
-            if v.status.state == State::Failed {
-                bail!("the container did not start; see `vcontainer logs --session {name}`");
+            match (v.status.state, v.status.exit_code) {
+                (State::Failed, _) => bail!("the container did not start; see `vcontainer logs --session {name}`"),
+                (State::Exited, Some(c)) if c != 0 => bail!("the container exited with {c}; see `vcontainer logs --session {name}`"),
+                _ => {}
             }
             for p in &s.ports {
                 println!("  port {p}: http://{}:{p}", s.ip);
             }
             return Ok(());
-        }
-        if start.elapsed() > Duration::from_secs(1800) {
-            bail!("still {:?} after 30 minutes", st.state);
         }
     }
 }
@@ -339,9 +361,12 @@ fn deploy(name: &str, image: &str, config: Config, secret_specs: &[String], port
 fn launch(s: &mut Session, owner: &crypto::SigningKey, boot: &BootInfo, image: &str, mut config: Config, secret_specs: &[String]) -> Result<Vec<u8>> {
     let r = ImageRef::parse(image)?;
     let token = if r.is_google() { Some(gcp::access_token()?) } else { None };
-    let digest = Registry::new(&r, token.clone().map(|t| ("oauth2accesstoken".into(), t)))
-        .resolve()
-        .with_context(|| format!("resolving {image}"))?;
+    let mut reg = Registry::new(&r, token.clone().map(|t| ("oauth2accesstoken".into(), t)));
+    let digest = reg.resolve().with_context(|| format!("resolving {image}"))?;
+    let index: vcontainer_core::registry::Manifest = serde_json::from_slice(&reg.manifest(&digest)?)?;
+    if index.is_index() {
+        index.linux_amd64().with_context(|| format!("{image} has no linux/amd64 image"))?;
+    }
     config.image = r.pinned(&digest);
     config.registry_token = token.is_some();
     let mut files = BTreeMap::new();
@@ -379,6 +404,9 @@ fn verify_cmd(session: Option<String>, url: Option<String>, policy: Option<PathB
     };
     let n = verify::nonce();
     let v = verify::verify(&verify::fetch_evidence(&url, &n)?, &n, &policy)?;
+    if policy.config.is_some() && v.config.is_none() {
+        bail!("the VM was restarted and has not been deployed again (state {:?}); its container is not running", v.status.state);
+    }
     println!("{label}: VERIFIED");
     for c in &v.claims {
         println!("  ✓ {c}");
@@ -420,6 +448,10 @@ fn publish(dir: &std::path::Path, bucket: Option<String>) -> Result<()> {
     let project = gcp::project()?;
     let m = measure::measure(&dir.join("BOOTX64.EFI"), &dir.join("disk.raw"))?;
     measure::print(&m);
+    let info: serde_json::Value = std::fs::read(dir.join("build-info.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    if info["dirty"].as_bool() != Some(false) {
+        eprintln!("warning: out/ was not built from a clean commit; others cannot reproduce it");
+    }
     let image = format!("vcontainer-{}", &hex(&m.pe_sha384)[..12]);
     let bucket = bucket.unwrap_or_else(|| format!("{project}-vcontainer"));
     if gcp::gcloud(&["storage", "buckets", "describe", &format!("gs://{bucket}"), "--format=value(name)"]).is_err() {
@@ -443,7 +475,8 @@ fn publish(dir: &std::path::Path, bucket: Option<String>) -> Result<()> {
         project,
         pe_authenticode_sha384: hex(&m.pe_sha384),
         gpt_event_sha384: hex(&m.gpt_sha384),
-        rtmr1: m.rtmr1.iter().map(|r| hex(r)).collect(),
+        commit: info["commit"].as_str().map(String::from),
+        source_date_epoch: info["source_date_epoch"].as_u64(),
     })?;
     println!("published {image}; new sessions boot it");
     Ok(())

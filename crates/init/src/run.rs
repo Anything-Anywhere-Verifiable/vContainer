@@ -114,7 +114,7 @@ fn setup_and_exec(spec: &RunSpec) -> Result<std::convert::Infallible> {
     }
     mount("devpts", &r("/dev/pts"), "devpts", libc::MS_NOSUID | libc::MS_NOEXEC, Some("newinstance,ptmxmode=0666,mode=0620"))?;
     std::os::unix::fs::symlink("pts/ptmx", r("/dev/ptmx"))?;
-    mount("shm", &r("/dev/shm"), "tmpfs", libc::MS_NOSUID | libc::MS_NODEV, Some("mode=1777"))?;
+    mount("shm", &r("/dev/shm"), "tmpfs", libc::MS_NOSUID | libc::MS_NODEV, Some("mode=1777,size=65536k"))?;
     for (link, target) in [("fd", "/proc/self/fd"), ("stdin", "/proc/self/fd/0"), ("stdout", "/proc/self/fd/1"), ("stderr", "/proc/self/fd/2")] {
         std::os::unix::fs::symlink(target, r(&format!("/dev/{link}")))?;
     }
@@ -137,6 +137,9 @@ fn setup_and_exec(spec: &RunSpec) -> Result<std::convert::Infallible> {
     let (uid, gid, home) = prepare(spec)?;
     let env = with_defaults(spec.env.clone(), &home);
 
+    // Docker's default open-file limits.
+    let nofile = libc::rlimit { rlim_cur: 1024, rlim_max: 524288 };
+    check(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &nofile) }, "setrlimit")?;
     let keep: HashSet<Capability> = CAPS.into_iter().collect();
     for cap in caps::all() {
         if !keep.contains(&cap) {
@@ -165,6 +168,8 @@ fn setup_and_exec(spec: &RunSpec) -> Result<std::convert::Infallible> {
     let mut pe: Vec<*const libc::c_char> = env.iter().map(|s| s.as_ptr()).collect();
     pa.push(std::ptr::null());
     pe.push(std::ptr::null());
+    // Rust ignores SIGPIPE; the workload gets the default, as under Docker.
+    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
     unsafe { libc::execve(cstr(&prog).as_ptr(), pa.as_ptr(), pe.as_ptr()) };
     bail!("exec {prog}: {}", std::io::Error::last_os_error())
 }
@@ -251,7 +256,7 @@ fn resolve(prog: &str, env: &[String]) -> Result<String> {
     }
     let path = env.iter().find_map(|e| e.strip_prefix("PATH=")).unwrap_or("/usr/bin:/bin");
     for dir in path.split(':') {
-        let cand = format!("{dir}/{prog}");
+        let cand = Path::new(dir).join(prog).to_string_lossy().into_owned();
         if std::fs::metadata(&cand).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0) {
             return Ok(cand);
         }

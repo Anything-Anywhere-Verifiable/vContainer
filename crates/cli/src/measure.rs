@@ -25,12 +25,17 @@ pub struct Measurement {
 pub fn measure(efi: &Path, disk: &Path) -> Result<Measurement> {
     let pe_sha384 = authenticode_sha384(&std::fs::read(efi).with_context(|| format!("read {}", efi.display()))?)?;
     let gpt_sha384 = Sha384::digest(gpt_event(&std::fs::read(disk)?)?).into();
+    Ok(Measurement { pe_sha384, gpt_sha384, rtmr1: rtmr1(&pe_sha384, &gpt_sha384).to_vec() })
+}
+
+/// The two RTMR1 values the firmware can produce for this PE and GPT.
+pub fn rtmr1(pe_sha384: &[u8; 48], gpt_sha384: &[u8; 48]) -> [[u8; 48]; 2] {
     let action = |s: &str| -> [u8; 48] { Sha384::digest(s.as_bytes()).into() };
     let separator: [u8; 48] = Sha384::digest([0u8; 4]).into();
-    let head = [action(CALLING), separator, gpt_sha384, pe_sha384];
+    let head = [action(CALLING), separator, *gpt_sha384, *pe_sha384];
     let normal = replay(head.iter().chain(&[action(EBS_INVOCATION), action(EBS_SUCCESS)]));
     let retry = replay(head.iter().chain(&[action(EBS_FAILURE), action(EBS_INVOCATION), action(EBS_SUCCESS)]));
-    Ok(Measurement { pe_sha384, gpt_sha384, rtmr1: vec![normal, retry] })
+    [normal, retry]
 }
 
 fn replay<'a>(digests: impl Iterator<Item = &'a [u8; 48]>) -> [u8; 48] {
