@@ -4,37 +4,38 @@
 #
 #   scripts/build-image.sh [--init PATH] [--clean] [--dev]
 #
-#   --init PATH  static binary to install as /init
-#                (default: target/x86_64-unknown-linux-musl/release/vcontainer-init)
-#   --clean      drop the cached kernel objects first (full rebuild)
-#   --dev        allow uncommitted changes (the result is not reproducible)
+#   --init PATH  static binary to install as /init: a dev build, needs --dev
+#                (default: built from crates/init)
+#   --clean      drop the cached kernel source and objects first (a release
+#                always does)
+#   --dev        allow uncommitted changes and --init (the result is not a release)
 #
-# Everything runs inside the vcontainer/builder:dev container (repo mounted at
-# /work, host uid). The kernel source is .cache/linux-6.18.57.tar.xz (sha256
-# pinned) plus image/patches/*.patch, extracted to .cache/linux-6.18.57;
-# kernel objects are cached in .cache/kbuild-6.18.57.
+# Everything runs inside the vcontainer/builder:dev container, built from
+# image/Containerfile (repo mounted at /work, host uid). The kernel source is
+# .cache/linux-6.18.57.tar.xz (sha256 pinned), extracted to
+# .cache/linux-6.18.57; kernel objects are cached in .cache/kbuild-6.18.57.
 # Outputs in out/:
+#   init                 the /init that image/initramfs.list embeds
 #   BOOTX64.EFI          the PE (arch/x86/boot/bzImage)
 #   kernel.config        the final kernel .config
-#   initramfs.list, init the gen_init_cpio list and the /init it embeds
 #   disk.raw             1 GiB GPT disk, ESP only, \EFI\BOOT\BOOTX64.EFI
 #   vcontainer.tar.gz    disk.raw packed for `gcloud compute images create`
 #   rtmr1.txt            the RTMR1 predicted by tools/predict-rtmr1.py
-#   build-info.json      commit, dirty flag, SOURCE_DATE_EPOCH, builder image id
+#   build-info.json      commit, dirty flag, builder image id
 set -euo pipefail
 
 KVER=6.18.57
 KSRC_SHA256=5bd9acdc82ec5efc3790ae840e5aaa40dfde7efff261cf6dde902dc570acf98c
 BUILDER=vcontainer/builder:dev
-# Fixed identifiers so the GPT (measured into RTMR1) and the FAT are
-# byte-for-byte reproducible.
+# Fixed identifiers and ESP range so the GPT (measured into RTMR1) and the FAT
+# are byte-for-byte reproducible. ESP_LAST is the last usable LBA of the
+# 1 GiB disk (2097152 - 34).
 DISK_GUID=7C0E0000-5643-4F4E-5441-494E45520001
 ESP_GUID=7C0E0000-5643-4F4E-5441-494E45520002
 ESP_NAME=vcontainer-esp
+ESP_FIRST=2048 ESP_LAST=2097118
 FAT_VOLID=7C0E5643
 FAT_LABEL=VCONTAINER
-# Used when the tree has no commit yet: 2026-01-01T00:00:00Z.
-FALLBACK_EPOCH=1767225600
 
 die() { echo "build-image: $*" >&2; exit 1; }
 
@@ -49,50 +50,25 @@ if [[ "${1:-}" == --inside ]]; then
 	kobj=/work/.cache/kbuild-$KVER
 	tarball=/work/.cache/linux-$KVER.tar.xz
 
-	# Source tree = sha256-pinned tarball + image/patches/*.patch. The
-	# applied series is recorded in the tree; on any change, re-extract and
-	# drop the objects (a re-extracted file keeps its old tarball mtime, so
-	# kbuild would not notice a removed patch).
-	series="$( (cat image/patches/*.patch 2>/dev/null || true) | sha256sum | cut -c1-64)"
-	if [[ "$(cat "$ksrc/.vcontainer-patches" 2>/dev/null)" != "$series" ]]; then
-		echo "$KSRC_SHA256  $tarball" | sha256sum -c --quiet - || die "$tarball: sha256 mismatch"
-		echo "build-image: extracting $tarball and applying image/patches" >&2
-		rm -rf "$ksrc" "$kobj"
-		tar -xf "$tarball" -C /work/.cache
-		for p in image/patches/*.patch; do
-			[[ -e "$p" ]] || continue
-			patch -s -d "$ksrc" -p1 --no-backup-if-mismatch <"$p" || die "patch $p failed"
-		done
-		echo "$series" >"$ksrc/.vcontainer-patches"
+	# Kernel source = the sha256-pinned tarball, verified whenever the tree is created.
+	if [[ ! -d "$ksrc" ]]; then
+		if [[ ! -f "$tarball" ]]; then
+			curl -fL --retry 3 -o "$tarball.part" "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$KVER.tar.xz"
+			mv "$tarball.part" "$tarball"
+		fi
+		echo "$KSRC_SHA256  $tarball" | sha256sum -c --quiet - || { rm -f "$tarball"; die "$tarball: sha256 mismatch"; }
+		rm -rf "$kobj" "$ksrc.part"; mkdir "$ksrc.part"
+		tar -xf "$tarball" -C "$ksrc.part" --strip-components=1
+		mv "$ksrc.part" "$ksrc"
 	fi
-	ts="$(date -u -d "@$SOURCE_DATE_EPOCH" '+%Y-%m-%d %H:%M:%S UTC')"
-	export KBUILD_BUILD_TIMESTAMP="$ts" KBUILD_BUILD_USER=vcontainer \
-		KBUILD_BUILD_HOST=vcontainer KBUILD_BUILD_VERSION=1
+	# Constant build time and identity: they end up in the PE, so in RTMR1.
+	export SOURCE_DATE_EPOCH=1767225600 KBUILD_BUILD_TIMESTAMP='2026-01-01 00:00:00 UTC' KBUILD_BUILD_USER=vcontainer KBUILD_BUILD_HOST=vcontainer KBUILD_BUILD_VERSION=1
 	# Set (even empty) LOCALVERSION stops setlocalversion from probing git
 	# and appending "+".
 	export LOCALVERSION=
 	kmake=(make -C "$ksrc" O="$kobj" -j"$(nproc)")
 
-	# gen_init_cpio list; mtimes come from KBUILD_BUILD_TIMESTAMP (-d).
-	cat >out/initramfs.list.new <<-'EOF'
-		dir /dev 0755 0 0
-		nod /dev/console 0600 0 0 c 5 1
-		dir /proc 0755 0 0
-		dir /sys 0755 0 0
-		dir /run 0755 0 0
-		dir /etc 0755 0 0
-		dir /newroot 0755 0 0
-		file /init /work/out/init 0755 0 0
-	EOF
-	# Replace only on change, so an unchanged list does not force a relink.
-	if cmp -s out/initramfs.list.new out/initramfs.list; then
-		rm out/initramfs.list.new
-	else
-		mv out/initramfs.list.new out/initramfs.list
-	fi
-
-	mkdir -p "$kobj"
-	"${kmake[@]}" -s allnoconfig KCONFIG_ALLCONFIG=/work/image/kernel.config
+	"${kmake[@]}" -s allnoconfig KCONFIG_ALLCONFIG=/work/image/kernel.config KCONFIG_WARN_UNKNOWN_SYMBOLS=1 KCONFIG_WERROR=1
 	image/check-config.sh "$kobj/.config"
 	"${kmake[@]}" bzImage
 	image/check-config.sh "$kobj/.config"
@@ -101,23 +77,19 @@ if [[ "${1:-}" == --inside ]]; then
 	cp "$kobj/arch/x86/boot/bzImage" out/BOOTX64.EFI
 	cp "$kobj/.config" out/kernel.config
 
-	# Disk: exactly 1 GiB, GPT with one ESP at LBA 2048, FAT32, one file.
+	# Disk: exactly 1 GiB, GPT with one ESP, FAT32, one file.
 	rm -f out/disk.raw
 	truncate -s 1G out/disk.raw
 	sgdisk --clear --disk-guid="$DISK_GUID" \
-		--new=1:2048:0 --typecode=1:EF00 --change-name=1:"$ESP_NAME" \
+		--new=1:$ESP_FIRST:$ESP_LAST --typecode=1:EF00 --change-name=1:"$ESP_NAME" \
 		--partition-guid=1:"$ESP_GUID" out/disk.raw >/dev/null
-	first="$(sgdisk --info=1 out/disk.raw | sed -n 's/^First sector: \([0-9]*\).*/\1/p')"
-	last="$(sgdisk --info=1 out/disk.raw | sed -n 's/^Last sector: \([0-9]*\).*/\1/p')"
-	[[ "$first" == 2048 && -n "$last" ]] || die "unexpected ESP layout ($first..$last)"
 	# mkfs.fat counts BLOCKS in KiB.
-	mkfs.vfat -F 32 --invariant -i "$FAT_VOLID" -n "$FAT_LABEL" -h "$first" \
-		--offset="$first" out/disk.raw $(((last - first + 1) / 2)) >/dev/null
-	# mtools stamps new entries with SOURCE_DATE_EPOCH when it is set.
-	touch -d "@$SOURCE_DATE_EPOCH" out/BOOTX64.EFI
-	img="out/disk.raw@@$((first * 512))"
+	mkfs.vfat -F 32 --invariant -i "$FAT_VOLID" -n "$FAT_LABEL" -h $ESP_FIRST \
+		--offset=$ESP_FIRST out/disk.raw $(((ESP_LAST - ESP_FIRST + 1) / 2)) >/dev/null
+	# mtools stamps new entries with SOURCE_DATE_EPOCH.
+	img="out/disk.raw@@$((ESP_FIRST * 512))"
 	MTOOLS_SKIP_CHECK=1 mmd -i "$img" ::/EFI ::/EFI/BOOT
-	MTOOLS_SKIP_CHECK=1 mcopy -m -i "$img" out/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
+	MTOOLS_SKIP_CHECK=1 mcopy -i "$img" out/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
 	touch -d "@$SOURCE_DATE_EPOCH" out/disk.raw
 	rm -f out/vcontainer.tar.gz
 	tar --format=oldgnu --owner=0 --group=0 --numeric-owner \
@@ -133,7 +105,7 @@ fi
 # ---------------------------------------------------------------------------
 # On the host.
 # ---------------------------------------------------------------------------
-init=target/x86_64-unknown-linux-musl/release/vcontainer-init
+init=
 clean=0
 dev=0
 while [[ $# -gt 0 ]]; do
@@ -147,36 +119,24 @@ while [[ $# -gt 0 ]]; do
 done
 
 cd "$repo"
-[[ -f "$init" ]] || die "missing init binary $init (build it, or pass --init PATH)"
-file -b "$init" 2>/dev/null | grep -q 'statically linked\|static-pie' ||
-	echo "build-image: warning: $init does not look statically linked" >&2
-if [[ ! -f ".cache/linux-$KVER.tar.xz" ]]; then
-	mkdir -p .cache
-	curl -fL --retry 3 -o ".cache/linux-$KVER.tar.xz.part" "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$KVER.tar.xz"
-	echo "$KSRC_SHA256  .cache/linux-$KVER.tar.xz.part" | sha256sum -c --quiet - || die "kernel source sha256 mismatch"
-	mv ".cache/linux-$KVER.tar.xz.part" ".cache/linux-$KVER.tar.xz"
+rm -f out/build-info.json
+# The builder mounts the whole checkout, so the whole checkout is the input.
+# A release is a clean checkout of HEAD built with its own /init.
+commit="$(git rev-parse HEAD)"
+changes="$(git status --porcelain)"
+dirty=false; [[ -z "$changes" && -z "$init" ]] || dirty=true
+[[ "$dirty" == false || "$dev" == 1 ]] || die "not a release (uncommitted changes or --init); commit, or pass --dev"
+mkdir -p out .cache
+# A release starts from the verified tarball, never from cached source or objects.
+[[ "$clean" == 0 && "$dirty" == true ]] || rm -rf ".cache/linux-$KVER" ".cache/kbuild-$KVER"
+docker build -q -t "$BUILDER" -f image/Containerfile image >/dev/null
+in_builder() { docker run --rm --pull=never -u "$(id -u):$(id -g)" -e HOME=/tmp -e CARGO_HOME=/work/.cache/cargo -v "$repo:/work" -w /work "$BUILDER" "$@"; }
+if [[ -z "$init" ]]; then
+	in_builder env RUSTFLAGS="--remap-path-prefix=/work=. --remap-path-prefix=/work/.cache/cargo=cargo" cargo build --locked --release -p vcontainer-init --target x86_64-unknown-linux-musl
+	init=target/x86_64-unknown-linux-musl/release/vcontainer-init
 fi
-# A release must be rebuildable from a commit (--dev allows a dirty tree).
-dirty=false
-[[ -z "$(git status --porcelain -- crates image scripts Cargo.toml Cargo.lock rust-toolchain.toml 2>/dev/null)" ]] || dirty=true
-[[ "$dirty" == false || "$dev" == 1 ]] || die "uncommitted changes in the build inputs; commit them, or pass --dev"
-
-if [[ -z "${SOURCE_DATE_EPOCH:-}" ]]; then
-	SOURCE_DATE_EPOCH="$(git log -1 --format=%ct 2>/dev/null || true)"
-	SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$FALLBACK_EPOCH}"
-fi
-export SOURCE_DATE_EPOCH
-
-mkdir -p out
-[[ "$clean" == 0 ]] || rm -rf ".cache/kbuild-$KVER"
-# Copy /init into out/ only when it changed (the kernel relinks on a newer
-# mtime). The copy keeps the list path fixed whatever --init points at.
+# Copy only on change: the kernel relinks the initramfs on a newer mtime.
 cmp -s "$init" out/init || cp "$init" out/init
-chmod 0755 out/init
-
-docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -e SOURCE_DATE_EPOCH \
-	-v "$repo:/work" -w /work "$BUILDER" bash scripts/build-image.sh --inside
-printf '{"commit": "%s", "dirty": %s, "source_date_epoch": %s, "builder": "%s"}\n' \
-	"$(git rev-parse HEAD 2>/dev/null || echo unknown)" "$dirty" "$SOURCE_DATE_EPOCH" \
-	"$(docker image inspect -f '{{.Id}}' "$BUILDER")" >out/build-info.json
+in_builder bash scripts/build-image.sh --inside
+printf '{"commit": "%s", "dirty": %s, "builder": "%s"}\n' "$commit" "$dirty" "$(docker image inspect -f '{{.Id}}' "$BUILDER")" >out/build-info.json
 cat out/build-info.json

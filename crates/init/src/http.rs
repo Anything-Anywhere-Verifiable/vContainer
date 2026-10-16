@@ -42,7 +42,6 @@ impl Drop for Slot {
 }
 
 fn handle(mut s: TcpStream, app: &Arc<App>) -> Result<()> {
-    s.set_read_timeout(Some(Duration::from_secs(10)))?;
     s.set_write_timeout(Some(Duration::from_secs(30)))?;
     let (method, path, body) = match read_request(&mut s) {
         Ok(r) => r,

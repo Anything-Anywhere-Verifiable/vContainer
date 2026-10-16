@@ -3,10 +3,10 @@
 //! What a PASS means: Intel signed a quote for a TD running Google firmware
 //! that Google signed (MRTD), which booted exactly the published vcontainer
 //! PE (RTMR1) with nothing else in RTMR2, whose /init recorded the ledger in
-//! RTMR3: a fresh boot key, this owner's key, and (once launched) this exact
-//! launch config, before pulling anything. The quote answers our nonce and
-//! binds the reported status. ACPI and other firmware configuration in RTMR0
-//! are trusted (default GCE configuration), not appraised.
+//! RTMR3: a fresh boot key, this owner's key, and (once launched) the
+//! policy's exact launch, before pulling anything. The quote answers our
+//! nonce and binds the reported status. ACPI and other firmware configuration
+//! in RTMR0 are trusted (default GCE configuration), not appraised.
 
 use anyhow::{bail, ensure, Context, Result};
 use dcap_qvl::quote::Report;
@@ -25,46 +25,43 @@ pub struct Verified {
 }
 
 pub fn nonce() -> [u8; 32] {
-    crypto::random32()
+    crypto::random()
 }
 
-/// Text from the network, made safe to print (no control characters, no
-/// bidi controls that reorder what the terminal shows).
+/// Text from the network or the serial console, made safe to print as one
+/// line: no control characters (newlines and ESC included), no bidi controls
+/// that reorder what the terminal shows.
 pub(crate) fn untrusted(b: &[u8]) -> String {
     let bidi = |c: char| matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
-    String::from_utf8_lossy(b).chars().filter(|&c| !c.is_control() && !bidi(c)).take(300).collect()
+    String::from_utf8_lossy(b).chars().filter(|&c| !c.is_control() && !bidi(c)).collect()
+}
+
+/// A GET, or a POST of `json`; any status but 200 is an error.
+pub fn http(url: &str, json: Option<Vec<u8>>) -> Result<Vec<u8>> {
+    let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(60))).http_status_as_error(false).build().into();
+    let mut r = match json {
+        Some(b) => agent.post(url).header("Content-Type", "application/json").send(b)?,
+        None => agent.get(url).call()?,
+    };
+    let body = r.body_mut().with_config().limit(32 << 20).read_to_vec()?;
+    let status = r.status();
+    ensure!(status == 200, "{url}: HTTP {status}: {}", untrusted(&body[..body.len().min(300)]));
+    Ok(body)
 }
 
 pub fn fetch_evidence(url: &str, nonce: &[u8; 32]) -> Result<Evidence> {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(60)))
-        .http_status_as_error(false)
-        .build()
-        .into();
-    let mut r = agent
-        .get(format!("{url}/v1/evidence?nonce={}", hex(nonce)))
-        .call()
+    let body = http(&format!("{url}/v1/evidence?nonce={}", hex(nonce)), None)
         .with_context(|| format!("no answer from {url} (if the VM restarted, `vcontainer run --session NAME` reconnects)"))?;
-    let body = r.body_mut().with_config().limit(32 << 20).read_to_vec()?;
-    ensure!(r.status() == 200, "evidence: HTTP {}: {}", r.status(), untrusted(&body));
     Ok(serde_json::from_slice(&body)?)
 }
 
 pub fn post(url: &str, path: &str, body: &impl serde::Serialize) -> Result<()> {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(60)))
-        .http_status_as_error(false)
-        .build()
-        .into();
-    let mut r = agent.post(format!("{url}{path}")).header("Content-Type", "application/json").send(serde_json::to_vec(body)?)?;
-    let text = r.body_mut().with_config().limit(1 << 20).read_to_vec().unwrap_or_default();
-    ensure!(r.status() == 200, "{path}: HTTP {}: {}", r.status(), untrusted(&text));
-    Ok(())
+    http(&format!("{url}{path}"), Some(serde_json::to_vec(body)?)).map(drop)
 }
 
 pub fn verify(ev: &Evidence, nonce: &[u8; 32], policy: &Policy) -> Result<Verified> {
     let mut claims = Vec::new();
-    ensure!(ev.v == 1 && ev.tee == "tdx" && policy.tee == "tdx", "unsupported evidence (tee {})", untrusted(ev.tee.as_bytes()));
+    ensure!(ev.v == 1 && ev.tee == "tdx" && policy.tee == "tdx", "unsupported evidence or policy (only TDX, version 1)");
 
     // 1. Intel: quote signature, certificate chain and TCB status.
     let collateral = tokio::runtime::Builder::new_current_thread()
@@ -95,13 +92,10 @@ pub fn verify(ev: &Evidence, nonce: &[u8; 32], policy: &Policy) -> Result<Verifi
     ensure!(u64::from_le_bytes(td.td_attributes) == 0x1000_0000, "unexpected TD attributes {}", hex(&td.td_attributes));
     ensure!(td.mr_config_id == [0; 48] && td.mr_owner_config == [0; 48], "MRCONFIGID/MROWNERCONFIG are set");
     claims.push(format!("TD attributes: debug off (0x10000000), XFAM {:#x}", u64::from_le_bytes(td.xfam)));
-    if let Some(i) = &policy.instance {
-        let pzid = format!("{{\"instanceId\":{},\"numericalProjectId\":{},\"zone\":{}}}", i.id, i.project_number, serde_json::to_string(&i.zone)?);
-        ensure!(td.mr_owner[..] == Sha384::digest(pzid.as_bytes())[..], "MROWNER is not GCE instance {} in {}", i.id, i.zone);
-        claims.push(format!("GCE instance {} in {} (MROWNER)", i.id, i.zone));
-    } else {
-        claims.push("GCE instance: not checked (the policy names no instance)".into());
-    }
+    let i = &policy.instance;
+    let pzid = format!("{{\"instanceId\":{},\"numericalProjectId\":{},\"zone\":{}}}", i.id, i.project_number, serde_json::to_string(&i.zone)?);
+    ensure!(td.mr_owner[..] == Sha384::digest(pzid.as_bytes())[..], "MROWNER is not GCE instance {} in {}", i.id, i.zone);
+    claims.push(format!("GCE instance {} in {} (MROWNER)", i.id, i.zone));
 
     // 4. Firmware: Google-signed launch endorsement for this MRTD.
     let svn = crate::endorse::check_mrtd(&td.mr_td)?;
@@ -127,20 +121,18 @@ pub fn verify(ev: &Evidence, nonce: &[u8; 32], policy: &Policy) -> Result<Verifi
     ));
 
     // 6. Ledger in RTMR3.
-    ensure!(replay(&ev.ledger) == td.rt_mr3, "ledger does not replay to RTMR3");
+    ensure!(replay(ev.ledger.iter().map(Event::digest)) == td.rt_mr3, "ledger does not replay to RTMR3");
     let names: Vec<&str> = ev.ledger.iter().map(|e| e.name.as_str()).collect();
-    ensure!([EV_BOOT, EV_OWNER, EV_LAUNCH, EV_EXEC].starts_with(&names), "unexpected ledger {names:?}");
-    ensure!(status.state.ledger_len_ok(names.len()), "state {:?} with {} ledger events", status.state, names.len());
+    ensure!(names.len() >= 2 && [EV_BOOT, EV_OWNER, EV_LAUNCH, EV_EXEC].starts_with(&names), "unexpected ledger {names:?}");
     let boot = BootInfo::decode(&ev.ledger[0].payload)?;
-    ensure!(ev.ledger[1].payload.trim_ascii() == policy.owner.as_bytes(), "the session's owner key is not ours");
+    ensure!(ev.ledger[1].payload == policy.owner.as_bytes(), "the session's owner key is not ours");
     claims.push("ledger: fresh boot key, our owner key".into());
     let config = match ev.ledger.get(2) {
         Some(e) => {
-            let bytes = launch_config(&e.payload)?;
-            if let Some(want) = &policy.config {
-                ensure!(bytes == b64::decode(want)?.as_slice(), "the launched config is not the expected one");
+            if let Some(want) = &policy.launch {
+                ensure!(e.payload == b64::decode(want)?, "ledger event 2 is not the expected launch");
             }
-            let c = Config::parse(bytes)?;
+            let c = Config::parse(launch_config(&e.payload)?)?;
             claims.push(format!("launch measured before pull: {}", c.image));
             Some(c)
         }

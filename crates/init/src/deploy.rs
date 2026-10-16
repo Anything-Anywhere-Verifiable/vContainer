@@ -4,48 +4,31 @@
 use anyhow::{bail, ensure, Context, Result};
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-use vcontainer_core::registry::{ImageConfig, ImageRef, Manifest, Registry};
-use vcontainer_core::{Event, Logs, State, EV_EXEC};
+use vcontainer_core::registry::{ImageRef, Registry, RunConfig};
+use vcontainer_core::{Config, Event, Logs, Secrets, State, EV_EXEC};
 
-use crate::app::{extend, App};
+use crate::app::App;
 use crate::run::RunSpec;
 
 pub const ROOT: &str = "/newroot";
-const LAYER: &str = "/run/layer";
+pub const LAYER: &str = "/run/layer";
 
-pub fn run(app: Arc<App>) {
-    if let Err(e) = deploy(&app) {
+pub fn run(app: Arc<App>, config: Config, secrets: Secrets) {
+    if let Err(e) = deploy(&app, config, secrets) {
         app.set_state(State::Failed, None, Some(format!("{e:#}")));
     }
 }
 
-fn deploy(app: &Arc<App>) -> Result<()> {
-    let (config, token, files) = {
-        let mut g = app.inner.lock().unwrap();
-        let l = g.launch.as_mut().context("no launch")?;
-        let files = std::mem::take(&mut l.secrets.files);
-        (l.config.clone(), l.secrets.registry_token.take(), files)
-    };
+fn deploy(app: &App, config: Config, secrets: Secrets) -> Result<()> {
     let image = ImageRef::parse(&config.image)?;
-    let digest = image.digest.clone().context("image not pinned")?;
-    let creds = token.map(|t| ("oauth2accesstoken".to_string(), t));
-    let mut reg = Registry::new(&image, creds);
+    let mut reg = Registry::new(&image, secrets.registry_token);
 
     crate::sys::log(&format!("pulling {}", config.image));
-    let mut manifest: Manifest = serde_json::from_slice(&reg.manifest(&digest)?)?;
-    let mut manifest_digest = digest.clone();
-    if manifest.is_index() {
-        manifest_digest = manifest.linux_amd64()?.digest.clone();
-        manifest = serde_json::from_slice(&reg.manifest(&manifest_digest)?)?;
-    }
-    let cfg = manifest.config.as_ref().context("manifest has no config")?;
-    ensure!(cfg.size <= 4 << 20, "image config too large");
-    let mut raw = Vec::new();
-    reg.blob(&cfg.digest, cfg.size, &mut raw)?;
-    let image_config: ImageConfig = serde_json::from_slice(&raw)?;
+    let (manifest_digest, manifest) = reg.image_manifest(&image.reference)?;
+    let image_config = reg.config(&manifest.config)?;
 
     crate::sys::mount("tmpfs", ROOT, "tmpfs", 0, Some("mode=0755,size=90%"))?;
     for (i, layer) in manifest.layers.iter().enumerate() {
@@ -58,82 +41,71 @@ fn deploy(app: &Arc<App>) -> Result<()> {
                 Err(e) => return Err(e),
             }
         }
-        unpack(LAYER).with_context(|| format!("unpack {}", layer.digest))?;
+        helper("unpack", b"", |word, _| bail!("unexpected {word:?}")).with_context(|| format!("layer {}", layer.digest))?;
         fs::remove_file(LAYER)?;
     }
 
-    let rc = image_config.config;
-    let (argv, env, cwd) = command(&config, &rc)?;
-    let user = config.user.clone().or(rc.user.clone()).unwrap_or_default();
-    {
-        let mut g = app.inner.lock().unwrap();
-        extend(&mut g, Event::new(EV_EXEC, manifest_digest.into_bytes()))?;
-    }
-    let resolv = fs::read_to_string("/etc/resolv.conf")?;
-    let spec = RunSpec { argv, env, cwd, user, files, resolv, serial: config.logs == Logs::Serial };
-    start(app, &spec)
-}
-
-/// Runs the unpack helper (chrooted into ROOT) with the layer as stdin.
-fn unpack(layer: &str) -> Result<()> {
-    let mut child = Command::new("/init")
-        .args(["--stage", "unpack", ROOT])
-        .stdin(fs::File::open(layer)?)
-        .stdout(Stdio::piped())
-        .spawn()?;
-    let mut out = String::new();
-    child.stdout.take().unwrap().read_to_string(&mut out)?;
-    ensure!(out.trim() == "ok", "unpack helper failed");
-    Ok(())
-}
-
-/// Docker semantics: a configured entrypoint drops the image's Cmd.
-fn command(c: &vcontainer_core::Config, rc: &vcontainer_core::registry::RunConfig) -> Result<(Vec<String>, Vec<String>, String)> {
-    let (entry, cmd) = match (&c.entrypoint, &c.cmd) {
-        (Some(e), cmd) => (e.clone(), cmd.clone().unwrap_or_default()),
-        (None, Some(cmd)) => (rc.entrypoint.clone().unwrap_or_default(), cmd.clone()),
-        (None, None) => (rc.entrypoint.clone().unwrap_or_default(), rc.cmd.clone().unwrap_or_default()),
-    };
-    let argv: Vec<String> = entry.into_iter().chain(cmd).collect();
-    ensure!(!argv.is_empty(), "no command: the image has no Entrypoint/Cmd and none was given");
-    let mut env: BTreeMap<String, String> = BTreeMap::new();
-    for kv in rc.env.iter().flatten().chain(c.env.iter()) {
-        let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
-        env.insert(k.to_string(), v.to_string());
-    }
-    let env = env.into_iter().map(|(k, v)| format!("{k}={v}")).collect();
-    let cwd = c.workdir.clone().or(rc.workdir.clone()).filter(|w| !w.is_empty()).unwrap_or_else(|| "/".into());
-    Ok((argv, env, cwd))
-}
-
-
-
-
-/// Starts the run helper and follows its reports: started / failed / exited.
-fn start(app: &Arc<App>, spec: &RunSpec) -> Result<()> {
-    let mut child = Command::new("/init")
-        .args(["--stage", "run"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()?;
-    child.stdin.take().unwrap().write_all(&serde_json::to_vec(spec)?)?;
-    for line in BufReader::new(child.stdout.take().unwrap()).lines() {
-        let line = line?;
-        let (word, rest) = line.split_once(' ').unwrap_or((&line, ""));
+    let spec = run_spec(&config, image_config.config, secrets.files)?;
+    app.measure(Event::new(EV_EXEC, manifest_digest.into_bytes()))?;
+    helper("run", &serde_json::to_vec(&spec)?, |word, rest| {
         match word {
             "started" => {
                 crate::sys::log(&format!("container started: {}", spec.argv.join(" ")));
                 app.set_state(State::Running, None, None);
             }
-            "failed" => bail!("container failed to start: {rest}"),
             "exited" => {
-                let code = rest.parse().unwrap_or(-1);
-                crate::sys::log(&format!("container exited with {code}"));
-                app.set_state(State::Exited, Some(code), None);
-                return Ok(());
+                crate::sys::log(&format!("container exited with {rest}"));
+                app.set_state(State::Exited, Some(rest.parse()?), None);
             }
-            _ => {}
+            _ => bail!("unexpected {word:?}"),
+        }
+        Ok(())
+    })
+}
+
+/// Merges the launch config over the image config as `docker run` does: a
+/// configured entrypoint drops the image's Cmd, and launch values win.
+fn run_spec(c: &Config, rc: RunConfig, files: BTreeMap<String, String>) -> Result<RunSpec> {
+    let (entry, cmd) = match (&c.entrypoint, &c.cmd) {
+        (Some(e), cmd) => (e.clone(), cmd.clone().unwrap_or_default()),
+        (None, Some(cmd)) => (rc.entrypoint.unwrap_or_default(), cmd.clone()),
+        (None, None) => (rc.entrypoint.unwrap_or_default(), rc.cmd.unwrap_or_default()),
+    };
+    let argv: Vec<String> = entry.into_iter().chain(cmd).collect();
+    ensure!(!argv.is_empty(), "no command: the image has no Entrypoint/Cmd and none was given");
+    let mut env = BTreeMap::new();
+    for kv in rc.env.iter().flatten().chain(&c.env) {
+        let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
+        env.insert(k, v);
+    }
+    Ok(RunSpec {
+        argv,
+        env: env.into_iter().map(|(k, v)| format!("{k}={v}")).collect(),
+        cwd: c.workdir.clone().or(rc.workdir).filter(|w| !w.is_empty()).unwrap_or_else(|| "/".into()),
+        user: c.user.clone().or(rc.user).unwrap_or_default(),
+        files,
+        serial: c.logs == Logs::Serial,
+    })
+}
+
+/// Runs `/init --stage <stage>` with `input` on stdin. Its stdout carries
+/// progress lines, handed to `progress` as (word, rest), then `ok` or
+/// `failed <reason>`.
+fn helper(stage: &str, input: &[u8], mut progress: impl FnMut(&str, &str) -> Result<()>) -> Result<()> {
+    let mut child = Command::new("/init")
+        .args(["--stage", stage])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?;
+    child.stdin.take().unwrap().write_all(input)?;
+    for line in BufReader::new(child.stdout.take().unwrap()).lines() {
+        let line = line?;
+        let (word, rest) = line.split_once(' ').unwrap_or((&line, ""));
+        match word {
+            "ok" => return Ok(()),
+            "failed" => bail!("{stage}: {rest}"),
+            _ => progress(word, rest)?,
         }
     }
-    bail!("run helper ended unexpectedly")
+    bail!("{stage}: helper ended without a result")
 }

@@ -10,7 +10,7 @@ pub mod registry;
 use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha384, Sha512};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// TCP port of the guest's attestation and control API.
 pub const PORT: u16 = 7700;
@@ -32,20 +32,6 @@ pub enum State {
     Running,
     Exited,
     Failed,
-}
-
-impl State {
-    /// The ledger length a session in this state must have.
-    pub fn ledger_len_ok(self, len: usize) -> bool {
-        match self {
-            State::Waiting => len == 2,
-            State::Starting => len == 3,
-            // The exec event is appended just before the helper starts it.
-            State::Pulling => len == 3 || len == 4,
-            State::Running | State::Exited => len == 4,
-            State::Failed => len == 3 || len == 4,
-        }
-    }
 }
 
 /// What the guest reports about its container. Bound into every quote.
@@ -85,12 +71,12 @@ impl Event {
     }
 }
 
-/// RTMR3 after extending `events` into an all-zero register.
-pub fn replay(events: &[Event]) -> [u8; 48] {
-    events.iter().fold([0u8; 48], |acc, e| {
+/// An RTMR after extending `digests` into an all-zero register.
+pub fn replay(digests: impl IntoIterator<Item = [u8; 48]>) -> [u8; 48] {
+    digests.into_iter().fold([0u8; 48], |acc, d| {
         let mut h = Sha384::new();
         h.update(acc);
-        h.update(e.digest());
+        h.update(d);
         h.finalize().into()
     })
 }
@@ -173,7 +159,7 @@ pub struct Config {
     pub user: Option<String>,
     /// Names of sealed secrets, written to `/run/secrets/<name>`.
     #[serde(default)]
-    pub secrets: Vec<String>,
+    pub secrets: BTreeSet<String>,
     /// Whether the sealed secrets carry a registry token for `image`.
     #[serde(default)]
     pub registry_token: bool,
@@ -184,7 +170,7 @@ pub struct Config {
 impl Config {
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         let c: Config = serde_json::from_slice(bytes).context("invalid launch config")?;
-        ensure!(c.image.contains("@sha256:"), "image must be pinned by digest");
+        ensure!(registry::valid_digest(&registry::ImageRef::parse(&c.image)?.reference), "image must be pinned by digest");
         for s in &c.secrets {
             ensure!(valid_name(s), "invalid secret name {s:?}");
         }
@@ -200,30 +186,21 @@ pub fn valid_name(s: &str) -> bool {
 }
 
 /// Plaintext of the sealed part of a launch.
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize)]
 pub struct Secrets {
-    #[serde(default)]
     pub files: BTreeMap<String, String>,
-    #[serde(default)]
     pub registry_token: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct Sealed {
-    #[serde(with = "b64")]
-    pub enc: Vec<u8>,
-    #[serde(with = "b64")]
-    pub ct: Vec<u8>,
 }
 
 /// `POST /v1/launch` body.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct LaunchRequest {
-    pub boot_id: String,
     pub issued_at: u64,
     #[serde(with = "b64")]
     pub config: Vec<u8>,
-    pub sealed: Option<Sealed>,
+    /// [`Secrets`] as JSON, sealed with [`crypto::seal`].
+    #[serde(with = "b64")]
+    pub sealed: Vec<u8>,
     #[serde(with = "b64")]
     pub sig: Vec<u8>,
 }
@@ -231,53 +208,27 @@ pub struct LaunchRequest {
 /// `POST /v1/commit` body.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct CommitRequest {
-    pub boot_id: String,
     #[serde(with = "b64")]
     pub sig: Vec<u8>,
 }
 
-fn sealed_hash(sealed: Option<&Sealed>) -> [u8; 64] {
-    let mut h = Sha512::new();
-    if let Some(s) = sealed {
-        h.update(&s.enc);
-        h.update(&s.ct);
-    }
-    h.finalize().into()
-}
-
-/// The message the owner signs to launch `config` on this boot.
-pub fn launch_message(boot: &BootInfo, issued_at: u64, config: &[u8], sealed: Option<&Sealed>) -> [u8; 64] {
-    let mut h = Sha512::new();
-    h.update(b"vcontainer/v1/launch\0");
-    h.update(boot.boot_id);
-    h.update(boot.hpke_pk);
-    h.update(issued_at.to_le_bytes());
-    h.update(Sha512::digest(config));
-    h.update(sealed_hash(sealed));
-    h.finalize().into()
-}
-
-/// Payload of the launch event: the config, a hash of the sealed secrets and
-/// the signed time, so the event identifies exactly one signed launch.
-pub fn launch_payload(config: &[u8], sealed: Option<&Sealed>, issued_at: u64) -> Vec<u8> {
-    let mut v = config.to_vec();
-    v.extend_from_slice(&sealed_hash(sealed));
-    v.extend_from_slice(&issued_at.to_le_bytes());
-    v
+/// Payload of the launch event, and what the owner signs:
+/// `issued_at ‖ SHA-512(sealed) ‖ config`.
+pub fn launch_payload(issued_at: u64, sealed: &[u8], config: &[u8]) -> Vec<u8> {
+    [&issued_at.to_le_bytes()[..], &Sha512::digest(sealed), config].concat()
 }
 
 /// The config bytes inside a launch event payload.
 pub fn launch_config(payload: &[u8]) -> Result<&[u8]> {
-    ensure!(payload.len() > 72, "launch event payload too short");
-    Ok(&payload[..payload.len() - 72])
+    payload.get(8 + 64..).context("launch event payload too short")
 }
 
-/// The message the owner signs to let exactly this measured launch pull.
-pub fn commit_message(boot_id: &[u8; 16], launch_payload: &[u8]) -> [u8; 64] {
+/// What the owner signs to `launch` or `commit` this launch payload on this boot.
+pub fn owner_message(action: &str, boot: &BootInfo, payload: &[u8]) -> [u8; 64] {
     let mut h = Sha512::new();
-    h.update(b"vcontainer/v1/commit\0");
-    h.update(boot_id);
-    h.update(Sha512::digest(launch_payload));
+    h.update(format!("vcontainer/v1/{action}\0"));
+    h.update(boot.encode());
+    h.update(payload);
     h.finalize().into()
 }
 
@@ -291,10 +242,15 @@ pub mod crypto {
     use hpke::kdf::HkdfSha256;
     use hpke::kem::X25519HkdfSha256;
     use hpke::{Deserializable, Kem, OpModeR, OpModeS, Serializable};
-    use rand_core::OsRng;
-    use rand_core_09::{OsRng as OsRng09, UnwrapErr};
+    use rand_core::{OsRng, RngCore, UnwrapErr};
 
     pub type HpkeSecret = <X25519HkdfSha256 as Kem>::PrivateKey;
+
+    pub fn random<const N: usize>() -> [u8; N] {
+        let mut b = [0u8; N];
+        UnwrapErr(OsRng).fill_bytes(&mut b);
+        b
+    }
 
     pub fn hpke_info(boot_id: &[u8; 16]) -> Vec<u8> {
         let mut v = b"vcontainer/v1/secrets\0".to_vec();
@@ -303,11 +259,12 @@ pub mod crypto {
     }
 
     pub fn hpke_keypair() -> (HpkeSecret, [u8; 32]) {
-        let (sk, pk) = X25519HkdfSha256::gen_keypair(&mut UnwrapErr(OsRng09));
+        let (sk, pk) = X25519HkdfSha256::gen_keypair(&mut UnwrapErr(OsRng));
         (sk, pk.to_bytes().into())
     }
 
-    pub fn seal(boot: &BootInfo, plaintext: &[u8]) -> Result<Sealed> {
+    /// Seals to this boot's HPKE key: `enc` (32 bytes) ‖ ciphertext.
+    pub fn seal(boot: &BootInfo, plaintext: &[u8]) -> Result<Vec<u8>> {
         let pk = <X25519HkdfSha256 as Kem>::PublicKey::from_bytes(&boot.hpke_pk)
             .map_err(|e| anyhow::anyhow!("bad HPKE public key: {e:?}"))?;
         let (enc, ct) = hpke::single_shot_seal::<ChaCha20Poly1305, HkdfSha256, X25519HkdfSha256, _>(
@@ -316,39 +273,25 @@ pub mod crypto {
             &hpke_info(&boot.boot_id),
             plaintext,
             b"",
-            &mut UnwrapErr(OsRng09),
+            &mut UnwrapErr(OsRng),
         )
         .map_err(|e| anyhow::anyhow!("HPKE seal failed: {e:?}"))?;
-        Ok(Sealed { enc: enc.to_bytes().to_vec(), ct })
+        Ok([enc.to_bytes().as_slice(), &ct].concat())
     }
 
-    pub fn open(sk: &HpkeSecret, boot_id: &[u8; 16], sealed: &Sealed) -> Result<Vec<u8>> {
-        let enc = <X25519HkdfSha256 as Kem>::EncappedKey::from_bytes(&sealed.enc)
+    pub fn open(sk: &HpkeSecret, boot_id: &[u8; 16], sealed: &[u8]) -> Result<Vec<u8>> {
+        let (enc, ct) = sealed.split_at_checked(32).context("sealed secrets too short")?;
+        let enc = <X25519HkdfSha256 as Kem>::EncappedKey::from_bytes(enc)
             .map_err(|e| anyhow::anyhow!("bad HPKE encapsulated key: {e:?}"))?;
         hpke::single_shot_open::<ChaCha20Poly1305, HkdfSha256, X25519HkdfSha256>(
             &OpModeR::Base,
             sk,
             &enc,
             &hpke_info(boot_id),
-            &sealed.ct,
+            ct,
             b"",
         )
         .map_err(|e| anyhow::anyhow!("HPKE open failed: {e:?}"))
-    }
-
-    pub fn owner_key_from_seed(seed: &[u8; 32]) -> SigningKey {
-        SigningKey::from_bytes(seed)
-    }
-
-    pub fn new_owner_seed() -> [u8; 32] {
-        SigningKey::generate(&mut OsRng).to_bytes()
-    }
-
-    pub fn random32() -> [u8; 32] {
-        use rand_core::RngCore;
-        let mut b = [0u8; 32];
-        OsRng.fill_bytes(&mut b);
-        b
     }
 
     pub fn sign(key: &SigningKey, msg: &[u8; 64]) -> Vec<u8> {
@@ -357,7 +300,7 @@ pub mod crypto {
 
     /// Parses the owner public key as published in instance metadata (base64).
     pub fn parse_owner(metadata: &[u8]) -> Result<VerifyingKey> {
-        let raw = super::b64::decode(std::str::from_utf8(metadata)?.trim())?;
+        let raw = super::b64::decode(std::str::from_utf8(metadata)?)?;
         let raw: [u8; 32] = raw.try_into().map_err(|_| anyhow::anyhow!("owner key is not 32 bytes"))?;
         Ok(VerifyingKey::from_bytes(&raw)?)
     }
@@ -429,7 +372,7 @@ mod tests {
         h.update([0u8; 48]);
         h.update(e[0].digest());
         let want: [u8; 48] = h.finalize().into();
-        assert_eq!(replay(&e), want);
+        assert_eq!(replay(e.iter().map(Event::digest)), want);
     }
 
     #[test]
@@ -438,18 +381,25 @@ mod tests {
         let boot = BootInfo { boot_id: [1; 16], hpke_pk: pk };
         let sealed = crypto::seal(&boot, b"secret").unwrap();
         assert_eq!(crypto::open(&sk, &boot.boot_id, &sealed).unwrap(), b"secret");
-        let key = crypto::owner_key_from_seed(&[3; 32]);
+        assert!(crypto::open(&sk, &boot.boot_id, &sealed[..31]).is_err());
+        let key = crypto::SigningKey::from_bytes(&[3; 32]);
         let owner = crypto::parse_owner(crypto::owner_metadata(&key).as_bytes()).unwrap();
-        let msg = launch_message(&boot, 5, b"{}", Some(&sealed));
-        crypto::verify(&owner, &msg, &crypto::sign(&key, &msg)).unwrap();
-        assert!(crypto::verify(&owner, &launch_message(&boot, 6, b"{}", Some(&sealed)), &crypto::sign(&key, &msg)).is_err());
+        let payload = launch_payload(5, &sealed, b"{}");
+        assert_eq!(launch_config(&payload).unwrap(), b"{}");
+        let msg = owner_message("launch", &boot, &payload);
+        let sig = crypto::sign(&key, &msg);
+        crypto::verify(&owner, &msg, &sig).unwrap();
+        assert!(crypto::verify(&owner, &owner_message("commit", &boot, &payload), &sig).is_err());
+        assert!(crypto::verify(&owner, &owner_message("launch", &boot, &launch_payload(6, &sealed, b"{}")), &sig).is_err());
     }
 
     #[test]
     fn config_requires_digest() {
+        let d = format!("sha256:{}", "0".repeat(64));
         assert!(Config::parse(br#"{"image":"docker.io/library/alpine:3"}"#).is_err());
-        assert!(Config::parse(br#"{"image":"docker.io/library/alpine@sha256:00","bogus":1}"#).is_err());
-        let c = Config::parse(br#"{"image":"docker.io/library/alpine@sha256:00"}"#).unwrap();
+        assert!(Config::parse(br#"{"image":"docker.io/library/alpine@sha256:00"}"#).is_err());
+        assert!(Config::parse(format!(r#"{{"image":"alpine@{d}","bogus":1}}"#).as_bytes()).is_err());
+        let c = Config::parse(format!(r#"{{"image":"alpine@{d}"}}"#).as_bytes()).unwrap();
         assert_eq!(c.logs, Logs::Serial);
     }
 }

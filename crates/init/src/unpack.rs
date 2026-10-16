@@ -1,77 +1,102 @@
-//! Layer unpack helper (`/init --stage unpack ROOT`, layer on stdin).
-//!
-//! Runs chrooted into ROOT, so absolute symlinks in the image resolve inside
-//! it. Each layer is read twice: first its whiteouts are applied to what the
-//! lower layers left, then its other entries are extracted with OCI
-//! replacement semantics (anything but dir-over-dir replaces what was there).
+//! Layer unpack helper (`/init --stage unpack`). It opens the verified layer
+//! at LAYER (outside the new root), then chroots into ROOT, so absolute
+//! symlinks in the image resolve inside it. Entries apply in archive order,
+//! as in containerd and moby: `.wh.<x>` removes x, `.wh..wh..opq` removes
+//! what the directory held except this layer's own entries, and any other
+//! entry replaces what was there unless both are directories.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use flate2::read::MultiGzDecoder;
+use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::fs::{self, File};
-use std::io::{self, BufReader, Read, Seek, SeekFrom};
-use std::os::unix::io::FromRawFd;
-use std::path::{Component, Path, PathBuf};
-use tar::{Archive, Entry, EntryType};
-
-use crate::sys::{check, cstr};
+use std::io::{self, BufReader, Read, Seek};
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::FileExt;
+use std::path::{Component, Path, PathBuf};
+use tar::{Archive, EntryType};
 
-pub fn main(root: &str) -> Result<()> {
-    check(unsafe { libc::chroot(cstr(root).as_ptr()) }, "chroot")?;
+use crate::deploy::{LAYER, ROOT};
+use crate::sys::{check, cstr};
+
+pub fn main() -> Result<()> {
+    let mut layer = File::open(LAYER).context(LAYER)?;
+    check(unsafe { libc::chroot(cstr(ROOT).as_ptr()) }, "chroot")?;
     std::env::set_current_dir("/")?;
-    let mut layer = unsafe { File::from_raw_fd(0) };
-    let len = layer.metadata()?.len();
-
-    each_entry(&mut layer, len, |_, path| {
-        let (Some(name), Some(dir)) = (path.file_name().and_then(|n| n.to_str()), path.parent()) else { return Ok(()) };
-        let d = Path::new("/").join(dir);
-        if !name.starts_with(".wh.") || fs::canonicalize(&d).ok().as_deref() != Some(d.as_path()) {
-            // Not a whiteout, or its directory is (via) a lower-layer symlink
-            // that this layer replaces in pass 2: nothing below it to delete.
-            return Ok(());
-        }
+    let mut magic = [0u8; 4];
+    let got = layer.read_at(&mut magic, 0)?;
+    let reader: Box<dyn Read + '_> = if got >= 2 && magic[..2] == [0x1f, 0x8b] {
+        Box::new(MultiGzDecoder::new(BufReader::new(&layer)))
+    } else if got == 4 && magic == [0x28, 0xb5, 0x2f, 0xfd] {
+        // Unbuffered, so the offset shows exactly where the frame ended.
+        Box::new(ruzstd::decoding::StreamingDecoder::new(&layer).map_err(|e| anyhow::anyhow!("zstd: {e}"))?)
+    } else {
+        Box::new(BufReader::new(&layer))
+    };
+    let mut archive = Archive::new(reader);
+    archive.set_preserve_permissions(true);
+    archive.set_preserve_ownerships(true);
+    archive.set_preserve_mtime(true);
+    archive.set_unpack_xattrs(true);
+    archive.set_overwrite(true);
+    let mut extracted = HashSet::new();
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = clean(&entry.path()?)?;
+        let (Some(name), Some(dir)) = (path.file_name(), path.parent()) else { continue };
+        let (dir, full) = (Path::new("/").join(dir), Path::new("/").join(&path));
         if name == ".wh..wh..opq" {
-            if let Ok(rd) = fs::read_dir(&d) {
-                for child in rd {
-                    remove(&child?.path())?;
-                }
-            }
-        } else if let Some(target) = name.strip_prefix(".wh.") {
-            remove(&d.join(target))?;
-        }
-        Ok(())
-    })?;
-
-    each_entry(&mut layer, len, |entry, path| {
-        if path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with(".wh.")) {
-            return Ok(());
-        }
-        let kind = entry.header().entry_type();
-        let full = Path::new("/").join(path);
-        if let Ok(old) = fs::symlink_metadata(&full) {
-            if !(kind.is_dir() && old.is_dir()) {
+            opaque(&fs::canonicalize(&dir).unwrap_or(dir), &extracted)?;
+        } else if let Some(target) = name.as_bytes().strip_prefix(b".wh.") {
+            remove(&dir.join(OsStr::from_bytes(target)))?;
+        } else {
+            let kind = entry.header().entry_type();
+            if !(kind.is_dir() && fs::symlink_metadata(&full).is_ok_and(|m| m.is_dir())) {
                 remove(&full)?;
             }
-        }
-        if matches!(kind, EntryType::Char | EntryType::Block) {
-            return Ok(()); // device nodes come from the runtime's /dev
-        }
-        if kind == EntryType::Fifo {
-            let mode = entry.header().mode()? & 0o7777;
-            if let Some(parent) = full.parent() {
-                fs::create_dir_all(parent)?;
+            match kind {
+                EntryType::Char | EntryType::Block => {} // device nodes come from the runtime's /dev
+                EntryType::Fifo => {
+                    let mode = entry.header().mode()? & 0o7777;
+                    fs::create_dir_all(&dir)?;
+                    let c = std::ffi::CString::new(full.as_os_str().as_bytes())?;
+                    check(unsafe { libc::mkfifo(c.as_ptr(), mode) }, "mkfifo")?;
+                    std::os::unix::fs::lchown(&full, Some(entry.header().uid()? as u32), Some(entry.header().gid()? as u32))?;
+                    fs::set_permissions(&full, std::os::unix::fs::PermissionsExt::from_mode(mode))?;
+                }
+                _ => {
+                    entry.unpack_in("/").with_context(|| format!("extract {}", path.display()))?;
+                }
             }
-            let c = std::ffi::CString::new(full.as_os_str().as_bytes())?;
-            check(unsafe { libc::mkfifo(c.as_ptr(), mode) }, "mkfifo")?;
-            let (uid, gid) = (entry.header().uid()? as u32, entry.header().gid()? as u32);
-            std::os::unix::fs::lchown(&full, Some(uid), Some(gid))?;
-            fs::set_permissions(&full, std::os::unix::fs::PermissionsExt::from_mode(mode))?;
-            return Ok(());
+            // Where the entry really is (its parent may be a symlink), and its
+            // ancestors: an opaque marker hides only what lower layers left.
+            let real = fs::canonicalize(&dir).unwrap_or(dir).join(name);
+            for a in real.ancestors() {
+                if !extracted.insert(a.to_path_buf()) {
+                    break;
+                }
+            }
         }
-        entry.unpack_in("/").with_context(|| format!("extract {}", path.display()))?;
-        Ok(())
-    })?;
-    println!("ok");
+    }
+    // Whatever follows the tar end-of-archive must still be read, so the
+    // rootfs never differs from what another runtime would extract.
+    io::copy(&mut archive.into_inner(), &mut io::sink())?;
+    let left = layer.metadata()?.len() - layer.stream_position()?;
+    ensure!(left == 0, "layer has {left} unconsumed bytes after its last frame");
+    Ok(())
+}
+
+/// Removes everything below `dir` (resolved) that this layer did not extract.
+fn opaque(dir: &Path, extracted: &HashSet<PathBuf>) -> Result<()> {
+    let Ok(children) = fs::read_dir(dir) else { return Ok(()) };
+    for child in children {
+        let p = child?.path();
+        if !extracted.contains(&p) {
+            remove(&p)?;
+        } else if fs::symlink_metadata(&p)?.is_dir() {
+            opaque(&p, extracted)?;
+        }
+    }
     Ok(())
 }
 
@@ -80,45 +105,6 @@ fn remove(p: &Path) -> Result<()> {
         Ok(m) if m.is_dir() => fs::remove_dir_all(p)?,
         Ok(_) => fs::remove_file(p)?,
         Err(_) => {}
-    }
-    Ok(())
-}
-
-fn each_entry(layer: &mut File, len: u64, mut f: impl FnMut(&mut Entry<Box<dyn Read>>, &Path) -> Result<()>) -> Result<()> {
-    layer.seek(SeekFrom::Start(0))?;
-    let mut magic = [0u8; 4];
-    let got = layer.read(&mut magic)?;
-    layer.seek(SeekFrom::Start(0))?;
-    // A duplicate descriptor shares the file offset with `layer`.
-    let raw = layer.try_clone()?;
-    let reader: Box<dyn Read> = if got >= 2 && magic[..2] == [0x1f, 0x8b] {
-        Box::new(MultiGzDecoder::new(BufReader::new(raw)))
-    } else if got == 4 && magic == [0x28, 0xb5, 0x2f, 0xfd] {
-        // Unbuffered, so the offset shows exactly where the frame ended.
-        Box::new(ruzstd::decoding::StreamingDecoder::new(raw).map_err(|e| anyhow::anyhow!("zstd: {e}"))?)
-    } else {
-        Box::new(BufReader::new(raw))
-    };
-    let mut archive = Archive::new(reader);
-    archive.set_preserve_permissions(true);
-    archive.set_preserve_ownerships(true);
-    archive.set_preserve_mtime(true);
-    archive.set_unpack_xattrs(true);
-    archive.set_overwrite(true);
-    for entry in archive.entries()? {
-        let mut entry = entry?;
-        let path = clean(&entry.path()?)?;
-        if path.as_os_str().is_empty() {
-            continue;
-        }
-        f(&mut entry, &path)?;
-    }
-    // Whatever follows the tar end-of-archive must still be read, so the
-    // rootfs never differs from what another runtime would extract.
-    io::copy(&mut archive.into_inner(), &mut io::sink())?;
-    let consumed = layer.stream_position()?;
-    if consumed != len {
-        bail!("layer has {} unconsumed bytes after its last frame", len - consumed);
     }
     Ok(())
 }

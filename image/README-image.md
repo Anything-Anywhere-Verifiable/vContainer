@@ -8,28 +8,25 @@ Design: `docs/design/DESIGN.md` §4.1, §4.2, §14.
 
 | File | Role |
 |---|---|
-| `image/kernel.config` | miniconfig for `make allnoconfig KCONFIG_ALLCONFIG=…`; every addition is commented |
-| `image/kernel.must-be-off` | symbols that must not be `=y`/`=m` |
+| `image/kernel.config` | miniconfig for `make allnoconfig KCONFIG_ALLCONFIG=…`; every addition is commented; section (4) lists the symbols that must stay off |
+| `image/initramfs.list` | `gen_init_cpio` list of the built-in initramfs |
 | `image/check-config.sh` | fails on any requested value missing from, or forbidden symbol present in, the final `.config` |
-| `scripts/build-image.sh` | builds everything in `vcontainer/builder:dev`; writes `out/` |
-| `scripts/qemu-boot.sh` | QEMU/KVM + OVMF sanity boot of `out/disk.raw` (not TDX) |
+| `scripts/build-image.sh` | builds `vcontainer/builder:dev`, then `/init` and everything else in it; writes `out/` |
 | `tools/tdx-probe/` | M0 probe used as `/init` (`build.sh`, `gce-run.sh`) |
 | `tools/predict-rtmr1.py` | offline RTMR1 prediction; checks it against a probe log |
 
 ```sh
-scripts/build-image.sh --init "$(tools/tdx-probe/build.sh)"   # or default init
-scripts/qemu-boot.sh --until 'PROBE DONE'                      # sanity boot
-tools/tdx-probe/gce-run.sh c3-standard-4 c3-standard-8         # real TDX, cleans up
+scripts/build-image.sh --dev --init "$(tools/tdx-probe/build.sh)"   # probe as /init
+tools/tdx-probe/gce-run.sh c3-standard-4 c3-standard-8               # real TDX, cleans up
 python3 tools/predict-rtmr1.py out/BOOTX64.EFI out/disk.raw out/probe-serial.log
 ```
 
 Build notes:
-- Source = `.cache/linux-6.18.57.tar.xz` (sha256 `5bd9acdc…f98c`) + `image/patches/*.patch`,
-  re-extracted whenever the patch series changes.
-- `KBUILD_BUILD_TIMESTAMP` = `SOURCE_DATE_EPOCH` = HEAD commit time (fallback
-  2026-01-01), `KBUILD_BUILD_{USER,HOST}=vcontainer`, `KBUILD_BUILD_VERSION=1`,
-  `LOCALVERSION=` (no `+`). So `BOOTX64.EFI` changes with every commit; pin
-  `SOURCE_DATE_EPOCH` to rebuild an old release.
+- Source = `.cache/linux-6.18.57.tar.xz` (sha256 `5bd9acdc…f98c`), verified
+  whenever `.cache/linux-6.18.57` is extracted (`--clean` drops the tree).
+- `KBUILD_BUILD_TIMESTAMP` = `SOURCE_DATE_EPOCH` = 2026-01-01 00:00:00 UTC
+  (constant), `KBUILD_BUILD_{USER,HOST}=vcontainer`, `KBUILD_BUILD_VERSION=1`,
+  `LOCALVERSION=` (no `+`). So `BOOTX64.EFI` depends only on the source.
 - Disk: disk GUID `7C0E0000-5643-4F4E-5441-494E45520001`, ESP GUID
   `…-494E45520002`, name `vcontainer-esp`, LBA 2048..2097118, FAT32 volume id
   `7C0E5643`, `mkfs.vfat --invariant`, mtools timestamps from `SOURCE_DATE_EPOCH`.
@@ -37,7 +34,7 @@ Build notes:
   `BOOTX64.EFI`, `disk.raw` and even `vcontainer.tar.gz`, both before and after
   the patch. The PE that ran on GCE (`sha256 5ca55270…3ad74`, built with
   `SOURCE_DATE_EPOCH=1792121823`) was rebuilt bit-for-bit afterwards.
-- All 36 must-be-off symbols are off without any fight: nothing in this
+- All 36 section (4) symbols are off without any fight: nothing in this
   config `select`s them. `allnoconfig` also silently drops default-on
   hardening (`CPU_MITIGATIONS`, which "cannot be overridden at runtime",
   `VMAP_STACK`, KASLR) and common syscalls (`madvise`, `membarrier`, `rseq`,

@@ -42,6 +42,18 @@ pub fn umount_detach(target: &str) -> Result<()> {
     check(unsafe { libc::umount2(cstr(target).as_ptr(), libc::MNT_DETACH) }, &format!("umount {target}"))
 }
 
+pub fn kernel_log() -> Result<String> {
+    const READ_ALL: libc::c_int = 3;
+    const SIZE_BUFFER: libc::c_int = 10;
+    let size = unsafe { libc::klogctl(SIZE_BUFFER, std::ptr::null_mut(), 0) };
+    check(size, "klogctl size")?;
+    let mut buf = vec![0u8; size as usize];
+    let n = unsafe { libc::klogctl(READ_ALL, buf.as_mut_ptr().cast(), buf.len() as libc::c_int) };
+    check(n, "klogctl read")?;
+    buf.truncate(n as usize);
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
 pub fn log(msg: &str) {
     eprintln!("vcontainer: {msg}");
 }
@@ -65,11 +77,4 @@ pub fn reap_forever() -> ! {
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
     }
-}
-
-pub fn random<const N: usize>() -> [u8; N] {
-    use rand_core::RngCore;
-    let mut b = [0u8; N];
-    rand_core::OsRng.fill_bytes(&mut b);
-    b
 }

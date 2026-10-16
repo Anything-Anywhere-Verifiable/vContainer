@@ -9,7 +9,7 @@
 use anyhow::{ensure, Context, Result};
 use sha2::{Digest, Sha384};
 use std::path::Path;
-use vcontainer_core::hex;
+use vcontainer_core::{hex, replay};
 
 const CALLING: &str = "Calling EFI Application from Boot Option";
 const EBS_INVOCATION: &str = "Exit Boot Services Invocation";
@@ -22,9 +22,11 @@ pub struct Measurement {
     pub rtmr1: Vec<[u8; 48]>,
 }
 
-pub fn measure(efi: &Path, disk: &Path) -> Result<Measurement> {
-    let pe_sha384 = authenticode_sha384(&std::fs::read(efi).with_context(|| format!("read {}", efi.display()))?)?;
-    let gpt_sha384 = Sha384::digest(gpt_event(&std::fs::read(disk)?)?).into();
+/// The measurements of the boot image built in `dir`.
+pub fn measure(dir: &Path) -> Result<Measurement> {
+    let read = |f: &str| std::fs::read(dir.join(f)).with_context(|| format!("read {}", dir.join(f).display()));
+    let pe_sha384 = authenticode_sha384(&read("BOOTX64.EFI")?)?;
+    let gpt_sha384 = Sha384::digest(gpt_event(&read("disk.raw")?)?).into();
     Ok(Measurement { pe_sha384, gpt_sha384, rtmr1: rtmr1(&pe_sha384, &gpt_sha384).to_vec() })
 }
 
@@ -33,18 +35,9 @@ pub fn rtmr1(pe_sha384: &[u8; 48], gpt_sha384: &[u8; 48]) -> [[u8; 48]; 2] {
     let action = |s: &str| -> [u8; 48] { Sha384::digest(s.as_bytes()).into() };
     let separator: [u8; 48] = Sha384::digest([0u8; 4]).into();
     let head = [action(CALLING), separator, *gpt_sha384, *pe_sha384];
-    let normal = replay(head.iter().chain(&[action(EBS_INVOCATION), action(EBS_SUCCESS)]));
-    let retry = replay(head.iter().chain(&[action(EBS_FAILURE), action(EBS_INVOCATION), action(EBS_SUCCESS)]));
+    let normal = replay(head.into_iter().chain([action(EBS_INVOCATION), action(EBS_SUCCESS)]));
+    let retry = replay(head.into_iter().chain([action(EBS_FAILURE), action(EBS_INVOCATION), action(EBS_SUCCESS)]));
     [normal, retry]
-}
-
-fn replay<'a>(digests: impl Iterator<Item = &'a [u8; 48]>) -> [u8; 48] {
-    digests.fold([0u8; 48], |acc, d| {
-        let mut h = Sha384::new();
-        h.update(acc);
-        h.update(d);
-        h.finalize().into()
-    })
 }
 
 pub fn authenticode_sha384(pe: &[u8]) -> Result<[u8; 48]> {

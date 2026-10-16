@@ -8,7 +8,7 @@
 # $ZONE, polls each serial port until "PROBE DONE", saves it to
 # out/probe-serial-<SHAPE>.log, then deletes the VMs and the image (also on
 # error or Ctrl-C). Build the image first:
-#   scripts/build-image.sh --init "$(tools/tdx-probe/build.sh)"
+#   scripts/build-image.sh --dev --init "$(tools/tdx-probe/build.sh)"
 set -euo pipefail
 
 PROJECT="${PROJECT:-agentlockbox}"

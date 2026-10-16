@@ -7,22 +7,33 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
+use vcontainer_core::Event;
 
 const RTMR3: &str = "/sys/devices/virtual/misc/tdx_guest/measurements/rtmr3:sha384";
 const TSM: &str = "/sys/kernel/config/tsm/report";
 const CCEL: &str = "/sys/firmware/acpi/tables/data/CCEL";
 
-pub fn check() -> Result<()> {
+/// `kernel` is the kernel log up to its ipconfig record. No host-supplied
+/// free text is logged before that record.
+pub fn check(kernel: &str) -> Result<()> {
     ensure!(Path::new(RTMR3).exists(), "not a TDX guest: {RTMR3} is missing");
     ensure!(Path::new(TSM).exists(), "configfs-tsm is missing ({TSM})");
+    // The host answers the hypervisor CPUID leaves; only KVM's paravirtual
+    // paths are part of the trusted default configuration.
+    ensure!(
+        kernel.lines().find(|l| l.contains("Hypervisor detected:")).is_some_and(|l| l.ends_with("Hypervisor detected: KVM")),
+        "the kernel did not detect KVM as the hypervisor"
+    );
     Ok(())
 }
 
-/// RTMR3 = SHA-384(RTMR3 ‖ digest). The kernel requires one 48-byte write.
-pub fn extend_rtmr3(digest: &[u8; 48]) -> Result<()> {
+/// Extends RTMR3 = SHA-384(RTMR3 ‖ digest), then appends the event, so the
+/// ledger always replays to RTMR3. The kernel requires one 48-byte write.
+pub fn measure(ledger: &mut Vec<Event>, event: Event) -> Result<()> {
     let mut f = fs::OpenOptions::new().write(true).open(RTMR3).context("open rtmr3")?;
-    let n = f.write(digest).context("extend rtmr3")?;
+    let n = f.write(&event.digest()).context("extend rtmr3")?;
     ensure!(n == 48, "short write to rtmr3");
+    ledger.push(event);
     Ok(())
 }
 

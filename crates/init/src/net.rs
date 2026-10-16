@@ -1,7 +1,7 @@
 //! Networking. The kernel's `ip=dhcp` (built into the measured command line)
 //! configures the address, MTU and DNS servers, but GCE leases a /32 with an
 //! off-link gateway, so the kernel cannot add the default route itself. It
-//! does log the gateway (`IP-Config: Complete ... gw=`); we add the routes.
+//! does log the gateway in its `IP-Config: Complete:` record; we add the routes.
 
 use anyhow::{bail, ensure, Context, Result};
 use std::fs;
@@ -10,15 +10,10 @@ use std::time::Duration;
 
 use crate::sys::{check, cstr};
 
-pub fn setup() -> Result<()> {
-    let log = kernel_log()?;
-    // The host answers the hypervisor CPUID leaves; only KVM's paravirtual
-    // paths are part of the trusted default configuration.
-    ensure!(log.contains("Hypervisor detected: KVM"), "the kernel did not detect KVM as the hypervisor");
-    let line = log
-        .lines()
-        .rfind(|l| l.contains("device=") && l.contains(" gw="))
-        .context("kernel IP autoconfiguration did not complete (no IP-Config line)")?;
+/// `dhcp` is the kernel log after `IP-Config: Complete:`; the record's
+/// device line comes first, before the host-chosen names.
+pub fn setup(dhcp: &str) -> Result<()> {
+    let line = dhcp.lines().find(|l| l.contains("device=")).context("the IP-Config record has no device line")?;
     let dev = field(line, "device=")?;
     let gw: Ipv4Addr = field(line, "gw=")?.parse().context("bad gateway in IP-Config line")?;
     ensure!(!gw.is_unspecified(), "DHCP lease has no gateway");
@@ -44,18 +39,6 @@ pub fn setup() -> Result<()> {
 fn field(line: &str, key: &str) -> Result<String> {
     let start = line.find(key).context("missing field")? + key.len();
     Ok(line[start..].split([',', ' ']).next().unwrap_or("").to_string())
-}
-
-fn kernel_log() -> Result<String> {
-    const READ_ALL: libc::c_int = 3;
-    const SIZE_BUFFER: libc::c_int = 10;
-    let size = unsafe { libc::klogctl(SIZE_BUFFER, std::ptr::null_mut(), 0) };
-    check(size, "klogctl size")?;
-    let mut buf = vec![0u8; size as usize];
-    let n = unsafe { libc::klogctl(READ_ALL, buf.as_mut_ptr().cast(), buf.len() as libc::c_int) };
-    check(n, "klogctl read")?;
-    buf.truncate(n as usize);
-    Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
 fn sockaddr(ip: Ipv4Addr) -> libc::sockaddr {

@@ -11,7 +11,6 @@ use anyhow::{bail, ensure, Context, Result};
 use rsa::pkcs8::DecodePublicKey;
 use rsa::{Pss, RsaPublicKey};
 use sha2::{Digest, Sha256};
-use std::time::Duration;
 use vcontainer_core::hex;
 use x509_cert::der::{Decode, Encode};
 use x509_cert::Certificate;
@@ -54,10 +53,7 @@ pub fn check_mrtd(mrtd: &[u8; 48]) -> Result<u64> {
 /// Google Cloud host, using Google's public host registry.
 pub fn check_host(ppid: &[u8]) -> Result<()> {
     let url = format!("https://storage.googleapis.com/confidential-host-registry/{}", hex(ppid));
-    let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(30))).http_status_as_error(false).build().into();
-    let status = agent.get(&url).call()?.status();
-    ensure!(status == 200, "PPID {} is not in Google's host registry (HTTP {status})", hex(ppid));
-    Ok(())
+    crate::verify::http(&url, None).map(drop).with_context(|| format!("PPID {} is not in Google's host registry", hex(ppid)))
 }
 
 fn fetch(mrtd: &[u8; 48]) -> Result<Vec<u8>> {
@@ -68,8 +64,7 @@ fn fetch(mrtd: &[u8; 48]) -> Result<Vec<u8>> {
         return Ok(b);
     }
     let url = format!("https://storage.googleapis.com/gce_tcb_integrity/ovmf_x64_csm/tdx/{}.binarypb", hex(mrtd));
-    let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(30))).build().into();
-    let b = agent.get(&url).call().with_context(|| format!("no Google endorsement for this MRTD ({url})"))?.body_mut().with_config().limit(1 << 20).read_to_vec()?;
+    let b = crate::verify::http(&url, None).context("no Google endorsement for this MRTD")?;
     std::fs::write(&path, &b)?;
     Ok(b)
 }

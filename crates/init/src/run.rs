@@ -5,10 +5,10 @@
 //! namespace without any of /init's mounts (configfs, writable sysfs, TEE
 //! devices), a read-only /proc/sys, Docker's default capabilities minus
 //! MKNOD and SYS_CHROOT, and then execs the workload. A CLOEXEC pipe tells
-//! the helper whether exec happened; the helper reports on stdout:
-//! `started`, `failed <reason>`, then `exited <code>`.
+//! the helper whether exec happened; it reports `started`, then
+//! `exited <code>` when the workload ends.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use caps::{CapSet, Capability};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
@@ -31,7 +31,6 @@ pub struct RunSpec {
     pub user: String,
     /// Sealed secret files (base64), written to /run/secrets.
     pub files: BTreeMap<String, String>,
-    pub resolv: String,
     pub serial: bool,
 }
 
@@ -53,6 +52,8 @@ const CAPS: [Capability; 12] = [
 
 pub fn main() -> Result<()> {
     let spec: RunSpec = serde_json::from_reader(std::io::stdin())?;
+    // /init's resolv.conf (from DHCP) is out of reach once the root moves.
+    let resolv = std::fs::read("/etc/resolv.conf")?;
     let mut fds = [0; 2];
     check(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, "pipe")?;
     check(unsafe { libc::unshare(libc::CLONE_NEWNS | libc::CLONE_NEWPID) }, "unshare")?;
@@ -60,7 +61,7 @@ pub fn main() -> Result<()> {
     check(pid, "fork")?;
     if pid == 0 {
         unsafe { libc::close(fds[0]) };
-        let err = format!("{:#}", setup_and_exec(&spec).unwrap_err());
+        let err = format!("{:#}", setup_and_exec(&spec, &resolv).unwrap_err());
         unsafe {
             libc::write(fds[1], err.as_ptr().cast(), err.len());
             libc::_exit(127);
@@ -69,21 +70,16 @@ pub fn main() -> Result<()> {
     unsafe { libc::close(fds[1]) };
     let mut why = String::new();
     unsafe { File::from_raw_fd(fds[0]) }.read_to_string(&mut why)?;
-    let mut out = std::io::stdout();
-    if why.is_empty() {
-        writeln!(out, "started")?;
-    } else {
-        writeln!(out, "failed {}", why.replace('\n', " "))?;
-    }
-    out.flush()?;
+    ensure!(why.is_empty(), "{why}");
+    println!("started");
     let mut st = 0;
     check(unsafe { libc::waitpid(pid, &mut st, 0) }, "waitpid")?;
     let code = if libc::WIFEXITED(st) { libc::WEXITSTATUS(st) } else { 128 + libc::WTERMSIG(st) };
-    writeln!(out, "exited {code}")?;
+    println!("exited {code}");
     Ok(())
 }
 
-fn setup_and_exec(spec: &RunSpec) -> Result<std::convert::Infallible> {
+fn setup_and_exec(spec: &RunSpec, resolv: &[u8]) -> Result<std::convert::Infallible> {
     // stdio: stdin is never the host-controlled console.
     let null = unsafe { libc::open(cstr("/dev/null").as_ptr(), libc::O_RDWR) };
     let out = if spec.serial { unsafe { libc::open(cstr("/dev/console").as_ptr(), libc::O_WRONLY) } } else { null };
@@ -119,14 +115,10 @@ fn setup_and_exec(spec: &RunSpec) -> Result<std::convert::Infallible> {
         std::os::unix::fs::symlink(target, r(&format!("/dev/{link}")))?;
     }
 
-    // Drop every mount /init uses, including configfs and securityfs.
+    // Detach /init's mounts: its procfs, its sysfs (with configfs below it),
+    // devtmpfs and /run.
     for p in ["/proc", "/sys", "/dev", "/run"] {
-        if let Err(e) = umount_detach(p) {
-            // EINVAL: not a mount point here (e.g. in tests); anything else is fatal.
-            if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINVAL) {
-                return Err(e);
-            }
-        }
+        umount_detach(p)?;
     }
     std::env::set_current_dir(ROOT)?;
     mount(".", "/", "", libc::MS_MOVE, None).context("move new root")?;
@@ -134,7 +126,7 @@ fn setup_and_exec(spec: &RunSpec) -> Result<std::convert::Infallible> {
     std::env::set_current_dir("/")?;
     // From here on every path, and every symlink in the image, resolves
     // inside the container's root.
-    let (uid, gid, home) = prepare(spec)?;
+    let (uid, gid, home) = prepare(spec, resolv)?;
     let env = with_defaults(spec.env.clone(), &home);
 
     // Docker's default open-file limits.
@@ -156,10 +148,9 @@ fn setup_and_exec(spec: &RunSpec) -> Result<std::convert::Infallible> {
     }
     caps::clear(None, CapSet::Ambient)?;
 
-    std::fs::create_dir_all(&spec.cwd)?;
     std::env::set_current_dir(&spec.cwd).with_context(|| format!("chdir {}", spec.cwd))?;
     // Mark every other descriptor close-on-exec (the status pipe already is).
-    unsafe { libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 4u32 /* CLOSE_RANGE_CLOEXEC */) };
+    check(unsafe { libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, libc::CLOSE_RANGE_CLOEXEC) } as libc::c_int, "close_range")?;
 
     let prog = resolve(&spec.argv[0], &env)?;
     let c = |v: &[String]| v.iter().map(|s| CString::new(s.as_str())).collect::<Result<Vec<_>, _>>();
@@ -174,11 +165,11 @@ fn setup_and_exec(spec: &RunSpec) -> Result<std::convert::Infallible> {
     bail!("exec {prog}: {}", std::io::Error::last_os_error())
 }
 
-/// Writes /etc files and secrets (as root, inside the new root) and resolves
-/// the user. Returns (uid, gid, home).
-fn prepare(spec: &RunSpec) -> Result<(u32, u32, String)> {
+/// As root inside the new root: writes /etc files and secrets, creates the
+/// workdir and resolves the user. Returns (uid, gid, home).
+fn prepare(spec: &RunSpec, resolv: &[u8]) -> Result<(u32, u32, String)> {
     std::fs::create_dir_all("/etc")?;
-    write_new("/etc/resolv.conf", spec.resolv.as_bytes(), 0o644)?;
+    write_new("/etc/resolv.conf", resolv, 0o644)?;
     write_new("/etc/hosts", b"127.0.0.1\tlocalhost vcontainer\n", 0o644)?;
     write_new("/etc/hostname", b"vcontainer\n", 0o644)?;
     let (uid, gid, home) = user(&spec.user)?;
@@ -190,6 +181,7 @@ fn prepare(spec: &RunSpec) -> Result<(u32, u32, String)> {
             std::os::unix::fs::chown(&path, Some(uid), Some(gid))?;
         }
     }
+    std::fs::create_dir_all(&spec.cwd)?;
     Ok((uid, gid, home))
 }
 

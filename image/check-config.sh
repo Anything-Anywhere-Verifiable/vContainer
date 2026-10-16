@@ -1,45 +1,38 @@
 #!/usr/bin/env bash
-# Assert that a final kernel .config matches what we asked for.
+# Assert that a final kernel .config matches image/kernel.config.
 #
-#   image/check-config.sh FINAL_DOT_CONFIG [MINICONFIG] [MUST_BE_OFF]
+#   image/check-config.sh FINAL_DOT_CONFIG
 #
-# Every CONFIG_X=value line of the miniconfig (default image/kernel.config)
-# must appear verbatim in the final .config, and no symbol listed in the
-# must-be-off file (default image/kernel.must-be-off) may be =y or =m.
-# Kconfig and merge_config.sh only warn when a request is dropped (unmet
-# dependency) or a symbol is forced on by `select`; this script fails instead.
+# Every CONFIG_X=value line of kernel.config must appear verbatim in the final
+# .config, and no "# CONFIG_X is not set" symbol may be =y or =m there.
+# Kconfig only warns when a request is dropped (unmet dependency) or a symbol
+# is forced on by `select`; this script fails instead.
 set -euo pipefail
 
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-final="${1:?usage: check-config.sh FINAL_DOT_CONFIG [MINICONFIG] [MUST_BE_OFF]}"
-mini="${2:-$here/kernel.config}"
-off="${3:-$here/kernel.must-be-off}"
-for f in "$final" "$mini" "$off"; do
-	[[ -r "$f" ]] || { echo "check-config: cannot read $f" >&2; exit 2; }
-done
+final="${1:?usage: check-config.sh FINAL_DOT_CONFIG}"
+[[ -r "$final" ]] || { echo "check-config: cannot read $final" >&2; exit 2; }
 
-fail=0
-# Requested values: compare the whole "CONFIG_X=value" line.
+fail=0 on=0 off=0
 while IFS= read -r line; do
-	sym="${line%%=*}"
+	case "$line" in
+		CONFIG_*=*) sym="${line%%=*}" ;;
+		"# CONFIG_"*" is not set") sym="${line#\# }"; sym="${sym%% *}" ;;
+		*) continue ;;
+	esac
 	got="$(grep -E "^(# )?${sym}[= ]" "$final" || true)"
-	if [[ "$got" != "$line" ]]; then
-		printf 'MISMATCH %s\n  want: %s\n  got:  %s\n' "$sym" "$line" "${got:-<absent>}"
-		fail=1
+	if [[ "$line" == CONFIG_* ]]; then
+		on=$((on + 1))
+		[[ "$got" == "$line" ]] && continue
+	else
+		off=$((off + 1))
+		[[ "$got" != CONFIG_* ]] && continue
 	fi
-done < <(grep -E '^CONFIG_[A-Za-z0-9_]+=' "$mini")
-
-# Must-be-off symbols: absent or "is not set" are both fine.
-while IFS= read -r sym; do
-	[[ "$sym" =~ ^[A-Z0-9_]+$ ]] || { echo "check-config: bad must-be-off entry '$sym'" >&2; exit 2; }
-	if got="$(grep -E "^CONFIG_${sym}=" "$final")"; then
-		printf 'FORBIDDEN %s\n  want: # CONFIG_%s is not set\n  got:  %s\n' "$sym" "$sym" "$got"
-		fail=1
-	fi
-done < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' "$off" | grep -v '^$')
+	printf 'MISMATCH %s\n  want: %s\n  got:  %s\n' "$sym" "$line" "${got:-<absent>}"
+	fail=1
+done <"$(dirname "$0")/kernel.config"
 
 if [[ "$fail" != 0 ]]; then
-	echo "check-config: $final does not match $mini / $off" >&2
+	echo "check-config: $final does not match image/kernel.config" >&2
 	exit 1
 fi
-echo "check-config: OK ($(grep -cE '^CONFIG_[A-Za-z0-9_]+=' "$mini") requested values, $(sed -e 's/#.*//' "$off" | grep -c '[A-Z]') forbidden symbols)"
+echo "check-config: OK ($on requested values, $off forbidden symbols)"

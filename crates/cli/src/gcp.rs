@@ -3,7 +3,6 @@
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::process::Command;
-use std::time::Duration;
 
 pub const NETWORK: &str = "vcontainer";
 
@@ -12,7 +11,17 @@ pub fn gcloud(args: &[&str]) -> Result<String> {
     if !out.status.success() {
         bail!("gcloud {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim());
     }
-    Ok(String::from_utf8(out.stdout)?.trim().to_string())
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// A `gcloud ... describe`: None only if the resource does not exist; any
+/// other failure (auth, network, quota) is an error.
+pub fn describe(args: &[&str]) -> Result<Option<String>> {
+    match gcloud(args) {
+        Ok(out) => Ok(Some(out)),
+        Err(e) if e.to_string().contains("not found") => Ok(None),
+        Err(e) => Err(e),
+    }
 }
 
 pub fn project() -> Result<String> {
@@ -59,22 +68,13 @@ impl Instance {
 }
 
 pub fn instance(project: &str, name: &str, zone: &str) -> Result<Option<Instance>> {
-    let out = Command::new("gcloud")
-        .args(["compute", "instances", "describe", name, "--zone", zone, "--format=json", &format!("--project={project}")])
-        .output()?;
-    if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr);
-        if err.contains("was not found") {
-            return Ok(None);
-        }
-        bail!("gcloud compute instances describe {name}: {}", err.trim());
-    }
-    Ok(Some(serde_json::from_slice(&out.stdout)?))
+    let p = format!("--project={project}");
+    Ok(describe(&["compute", "instances", "describe", name, "--zone", zone, "--format=json", &p])?.map(|j| serde_json::from_str(&j)).transpose()?)
 }
 
 pub fn ensure_network(project: &str) -> Result<()> {
     let p = format!("--project={project}");
-    if gcloud(&["compute", "networks", "describe", NETWORK, "--format=value(name)", &p]).is_err() {
+    if describe(&["compute", "networks", "describe", NETWORK, "--format=value(name)", &p])?.is_none() {
         eprintln!("creating network {NETWORK}");
         gcloud(&["compute", "networks", "create", NETWORK, "--subnet-mode=auto", &p])?;
     }
@@ -88,7 +88,7 @@ pub fn ensure_firewall(project: &str, session: &str, ports: &[u16], source: &str
     let rule = format!("vcontainer-{session}");
     let allow: Vec<String> = std::iter::once(vcontainer_core::PORT).chain(ports.iter().copied()).map(|p| format!("tcp:{p}")).collect();
     let allow = allow.join(",");
-    if gcloud(&["compute", "firewall-rules", "describe", &rule, "--format=value(name)", &p]).is_ok() {
+    if describe(&["compute", "firewall-rules", "describe", &rule, "--format=value(name)", &p])?.is_some() {
         gcloud(&["compute", "firewall-rules", "update", &rule, &format!("--allow={allow}"), &format!("--source-ranges={source}"), &p])?;
     } else {
         gcloud(&[
@@ -136,7 +136,7 @@ pub fn delete(project: &str, name: &str, zone: &str) -> Result<()> {
         gcloud(&["compute", "instances", "delete", name, &format!("--zone={zone}"), "--quiet", &p])?;
     }
     let rule = format!("vcontainer-{name}");
-    if gcloud(&["compute", "firewall-rules", "describe", &rule, "--format=value(name)", &p]).is_ok() {
+    if describe(&["compute", "firewall-rules", "describe", &rule, "--format=value(name)", &p])?.is_some() {
         gcloud(&["compute", "firewall-rules", "delete", &rule, "--quiet", &p])?;
     }
     Ok(())
@@ -148,9 +148,7 @@ pub fn serial(project: &str, name: &str, zone: &str) -> Result<String> {
 
 /// This machine's public IPv4 address, for firewall rules.
 pub fn my_ip() -> Result<String> {
-    let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(10))).build().into();
-    let ip = agent.get("https://checkip.amazonaws.com").call()?.body_mut().read_to_string()?;
-    let ip = ip.trim().to_string();
+    let ip = String::from_utf8_lossy(&crate::verify::http("https://checkip.amazonaws.com", None)?).trim().to_string();
     ip.parse::<std::net::Ipv4Addr>().context("could not determine this machine's public IPv4 address (use --allow-from)")?;
     Ok(ip)
 }
