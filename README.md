@@ -71,7 +71,7 @@ Create the GCE image in your project and record its expected measurements:
 vcontainer publish
 ```
 
-You do this once per release. The first build downloads the kernel source and the build container's packages.
+You build and publish the boot image once. It is the same verified image for every container you run: the container image is pulled and measured only when you deploy it, so a new or changed agent image never needs a new boot image. Rebuild only when vContainer itself changes. The first build downloads the kernel source and the build container's packages.
 
 `scripts/build-image.sh` refuses a checkout with uncommitted changes; pass `--dev` while hacking. Anyone can rebuild a release byte for byte from its commit, which `vcontainer publish` records and `vcontainer verify` prints. To see the expected measurements without publishing, run `vcontainer measure`.
 
@@ -79,13 +79,22 @@ Your owner key and session files live in `~/.config/vcontainer`. The key is crea
 
 ## Usage
 
-A session is one VM, and each boot of it runs one container. Start a session, deploy into it, and remove it when you are done. In the example below, `[IP]`, `[ZONE]`, `[ID]` and `[REGISTRY]` stand for your own values.
+A session is one VM, and each boot of it runs one container. You start a session, deploy one container into it, and remove the session when you are done. The two examples below each follow that order.
+
+### Example 1: a public image
+
+Start a session named `demo`. The CLI creates the VM and verifies it before anything is sent to it:
+
+```sh
+vcontainer run --session demo
+```
+
+The output lists every check. `[IP]`, `[ZONE]` and `[ID]` stand for your session's values:
 
 ```console
-$ vcontainer run --session agent
-creating TDX confidential VM agent (c3-standard-4 in [ZONE])
+creating TDX confidential VM demo (c3-standard-4 in [ZONE])
 waiting for http://[IP]:7700 to boot and answer attestation
-session agent ([IP], [ZONE]): VERIFIED
+session demo ([IP], [ZONE]): VERIFIED
   ✓ Intel TDX quote: signature valid, TCB UpToDate (evaluation 20)
   ✓ fresh quote for our nonce; state Waiting
   ✓ TD attributes: debug off (0x10000000), XFAM 0x602e7
@@ -95,93 +104,129 @@ session agent ([IP], [ZONE]): VERIFIED
   ✓ boot image: kernel+initramfs+cmdline+/init with Authenticode 542ff6b7…21cffc12 (release vcontainer-542ff6b77f72, commit 32c2cb47…)
   ✓ ledger: fresh boot key, our owner key
   state: Waiting
-
-$ vcontainer deploy --session agent [REGISTRY]/openrouter-agent:v1 \
-    -p 8080 --secret OPENROUTER_API_KEY=@openrouter.key
-launching [REGISTRY]/openrouter-agent@sha256:acdf834c…
-launch measured and committed; the VM is pulling the image
-session agent ([IP], [ZONE]): VERIFIED
-  ...
-  ✓ launch measured before pull: [REGISTRY]/openrouter-agent@sha256:acdf834c…
-  ✓ container sealed: manifest sha256:b38d15a0…
-  state: Running
-  container: [REGISTRY]/openrouter-agent@sha256:acdf834c… env=[] secrets={"OPENROUTER_API_KEY"}
-  port 8080: http://[IP]:8080
 ```
 
-On a `c3-standard-4`, `vcontainer run` takes about 35 s, and deploying the 43 MB demo image takes 20–30 s. The demo agent in [examples/openrouter-agent](examples/openrouter-agent) is 40 lines of Python. It answers chat requests through OpenRouter with a key read from `/run/secrets`.
+This takes about 35 seconds. Deploy Docker Hub's `hello-world` image into the verified VM:
 
-### vcontainer run
+```sh
+vcontainer deploy --session demo hello-world
+```
 
-Create a TDX VM, or reconnect to an existing one, and verify it:
+The CLI resolves the tag to a digest, sends the launch, checks that the VM recorded it, and only then lets the VM pull. The container prints its message and exits, so the session ends in state `Exited (exit code 0)`. Read the message from the serial console:
+
+```sh
+vcontainer logs --session demo
+```
+
+Remove the session. The VM bills until you do, even after its container exits:
+
+```sh
+vcontainer rm --session demo
+```
+
+### Example 2: your own agent image, with an API key
+
+The [OpenRouter agent](examples/openrouter-agent) is 40 lines of Python. It answers `POST /chat` through OpenRouter with an API key that only the verified VM can read. You build its image yourself, push it to a private Artifact Registry repository, and pass the key as a secret.
+
+Set `REGISTRY` to your repository. It is an ordinary shell variable that only shortens the commands below: `vcontainer` never reads it, and it lasts only for this terminal. Replace `PROJECT` with your project ID; `vcontainer` is the repository name used here:
+
+```sh
+REGISTRY=us-central1-docker.pkg.dev/PROJECT/vcontainer
+```
+
+Create the repository (once per project):
+
+```sh
+gcloud artifacts repositories create vcontainer --repository-format=docker --location=us-central1
+```
+
+Let Docker push to it (once per machine):
+
+```sh
+gcloud auth configure-docker us-central1-docker.pkg.dev
+```
+
+Build the agent image and push it:
+
+```sh
+docker build --platform linux/amd64 -t "$REGISTRY/openrouter-agent:v1" examples/openrouter-agent
+```
+
+```sh
+docker push "$REGISTRY/openrouter-agent:v1"
+```
+
+Save your OpenRouter API key in a file named `openrouter.key` that holds only the key. Then start a session:
 
 ```sh
 vcontainer run --session agent
 ```
 
-Options:
-
-- `--zone ZONE` and `--machine-type TYPE` choose where and what to run (defaults: `us-central1-a`, `c3-standard-4`).
-- `--allow-from CIDR` sets who can reach the attestation port (7700) and the container's ports (default: your public IP).
-
-### vcontainer deploy
-
-Verify the session, send the launch, verify that the VM recorded it, and then let the VM pull and start the image. For the demo agent, first set `REGISTRY` to the registry path you pushed it to:
-
-```sh
-REGISTRY=us-central1-docker.pkg.dev/PROJECT/REPO
-```
-
-Then deploy it with its API key as a secret:
+Deploy the agent. `--secret` encrypts the key to this VM, and `-p 8080` opens the agent's port to your IP:
 
 ```sh
 vcontainer deploy --session agent "$REGISTRY/openrouter-agent:v1" -p 8080 --secret OPENROUTER_API_KEY=@openrouter.key
 ```
 
-`vcontainer pull` is an alias. Options:
+```console
+launching us-central1-docker.pkg.dev/[PROJECT]/vcontainer/openrouter-agent@sha256:acdf834c…
+launch measured and committed; the VM is pulling the image
+session agent ([IP], [ZONE]): VERIFIED
+  ...
+  ✓ launch measured before pull: us-central1-docker.pkg.dev/[PROJECT]/vcontainer/openrouter-agent@sha256:acdf834c…
+  ✓ container sealed: manifest sha256:b38d15a0…
+  state: Running
+  container: us-central1-docker.pkg.dev/[PROJECT]/vcontainer/openrouter-agent@sha256:acdf834c… env=[] secrets={"OPENROUTER_API_KEY"}
+  port 8080: http://[IP]:8080
+```
+
+Deploying this 43 MB image takes 20–30 seconds. The agent reads its key from `/run/secrets/OPENROUTER_API_KEY`. Set `IP` to the address in the last line (the one below is only an example), then chat with the agent:
+
+```sh
+IP=203.0.113.7
+```
+
+```sh
+curl -X POST "http://$IP:8080/chat" -d '{"message":"Reply with exactly: vContainer works"}'
+```
+
+Remove the session when you are done:
+
+```sh
+vcontainer rm --session agent
+```
+
+### Command reference
+
+**`vcontainer run --session NAME`** creates a VM, or reconnects to an existing one, and verifies it. Options:
+
+- `--zone ZONE` and `--machine-type TYPE` choose where and what to run (defaults: `us-central1-a`, `c3-standard-4`).
+- `--allow-from CIDR` sets who can reach the attestation port (7700) and the container's ports (default: your public IP).
+
+**`vcontainer deploy --session NAME IMAGE`** verifies the session, sends the launch, verifies that the VM recorded it, and then lets the VM pull and start the image. `vcontainer pull` is an alias. Options:
 
 - `-p PORT` opens a container port to the `--allow-from` range.
 - `-e KEY=VALUE` sets an environment variable. Variables are public (see [Trust](#trust)).
-- `--secret NAME=@FILE`, `--secret NAME=VALUE` or `--secret NAME` (taken from your environment) seals a secret to the VM. It appears as `/run/secrets/NAME`.
+- `--secret NAME=@FILE`, `--secret NAME=VALUE` or `--secret NAME` (taken from your environment) encrypts a secret to the VM. It appears as `/run/secrets/NAME`.
 - `--user`, `--workdir` and `--entrypoint` override the image's settings, and `-- CMD ARGS...` at the end overrides its command.
 - `--quiet` keeps container output off the serial console.
 - `--resume` finishes a deploy that was interrupted after its launch was sent but before the commit.
 
-Images must be linux/amd64 and fit in RAM. The kernel is minimal; for example, it has no user namespaces or io_uring. A tag is resolved to a digest before launch, and the digest is what gets measured. Private images work on Artifact Registry and gcr.io, where your `gcloud` access token is sealed to the VM.
+Images must be linux/amd64 and fit in RAM. The kernel is minimal; for example, it has no user namespaces or io_uring. A tag is resolved to a digest before launch, and the digest is what gets measured. Public images are pulled without credentials (Docker Hub is tested); private images work on Artifact Registry and gcr.io, where your `gcloud` access token is sealed to the VM.
 
-### vcontainer verify
-
-Verify a session again at any time, and write its policy for others:
+**`vcontainer verify --session NAME`** verifies a session again at any time. `--export-policy FILE` also writes what a third party needs: the expected measurements, your public key, the instance and the exact launch, but no secrets:
 
 ```sh
 vcontainer verify --session agent --export-policy agent-policy.json
 ```
 
-The policy holds what a third party needs: the expected measurements, your public key, the instance and the exact launch, but no secrets. With that file and the session's address in `IP`, anyone who can reach port 7700 verifies the session, without your key or your cloud account:
+With that file and the session's address in `IP`, anyone who can reach port 7700 verifies the session, without your key or your cloud account:
 
 ```sh
 vcontainer verify --url "http://$IP:7700" --policy agent-policy.json
 ```
 
-### vcontainer logs, ls, rm
-
-Print the serial console (kernel, `/init` and container output):
-
-```sh
-vcontainer logs --session agent
-```
-
-List your sessions and what each one runs:
-
-```sh
-vcontainer ls
-```
-
-Delete the VM and its firewall rule. A session bills as a running VM until you do:
-
-```sh
-vcontainer rm --session agent
-```
+**`vcontainer logs --session NAME`** prints the serial console: kernel, `/init` and container output. **`vcontainer ls`** lists your sessions and what each one runs. **`vcontainer rm --session NAME`** deletes the VM and its firewall rule.
 
 ## Trust
 
