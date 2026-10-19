@@ -34,7 +34,8 @@ As a result, you have verified the VM's boot and its empty state before it pulls
 
 Requirements:
 
-- Linux x86-64 with Docker and `rustup` (the repository pins Rust 1.95.0).
+- `rustup` (the repository pins Rust 1.95.0). The CLI runs on Linux and on macOS, Apple Silicon or Intel; CI builds and tests it on both Macs.
+- To build the boot image: Linux x86-64 with Docker. On a Mac, build and publish the image on a Linux machine, then copy `~/.config/vcontainer/release.json` to the Mac and install only the CLI.
 - A Google Cloud project with the Compute Engine API enabled and C3 quota in your zone.
 - `gcloud`, logged in.
 
