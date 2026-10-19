@@ -8,7 +8,29 @@ An agent in the cloud holds API keys and often handles private data. On an ordin
 - the agent's API keys are encrypted so that only the verified VM can read them;
 - others, such as the agent's users, can check the same evidence with a policy file you give them.
 
-**Contents:** [Quick start](#quick-start) · [Install](#install) · [More examples](#more-examples) · [Command reference](#command-reference) · [How it works](#how-it-works) · [Trust](#trust) · [Status](#status)
+**Contents:** [How it works](#how-it-works) · [Quick start](#quick-start) · [Install](#install) · [More examples](#more-examples) · [Command reference](#command-reference) · [Trust](#trust) · [Status](#status)
+
+## How it works
+
+vContainer keeps the code you have to trust small:
+
+| Part | Size |
+|---|---|
+| Code we wrote that runs in the VM (`/init` and the protocol) | about 1,450 lines of Rust |
+| CLI and verifier, on your machine | about 950 lines of Rust |
+| Kernel configuration | `allnoconfig` plus 107 options |
+| Build scripts | about 110 lines of shell |
+
+The VM boots a single file: a Linux kernel with a built-in initramfs whose only program is `/init`. There is no bootloader, root disk, systemd or container runtime. Until a container is deployed, the VM runs only the kernel and `/init`, which links musl and crates such as rustls, hpke and tar. The build is designed to be reproducible, and the file's measurement is predicted offline.
+
+The steps below are for the demo platform, Intel TDX on Google Cloud C3.
+
+1. **Boot and measure.** `vcontainer run` creates the VM. Before anything else, `/init` records a fresh key for this boot, then your public key, in a hardware register that can only be extended.
+2. **Verify the empty VM.** Your machine asks the VM for a quote over a fresh nonce and checks it: Intel's signature, Google's signed firmware, the exact boot image and the recorded keys.
+3. **Launch, verify, commit.** `vcontainer deploy` sends a launch signed with your key: the image digest, the container settings, and the secrets, encrypted to the boot key. `/init` records the launch. Your machine checks that the record is the launch it sent, and only then lets the VM pull.
+4. **Pull and run.** The VM pulls the image by digest, checks every layer and starts the container. Secrets appear as files in `/run/secrets`.
+
+As a result, you have verified the VM's boot and its empty state before it pulls anything, and secrets reach only that VM. The container cannot extend the register or request quotes over its own data, so it cannot forge the evidence.
 
 ## Quick start
 
@@ -42,7 +64,7 @@ session demo ([IP], [ZONE]): VERIFIED
   state: Waiting
 ```
 
-This takes about 35 seconds. [How it works](#how-it-works) explains what the checks establish. Deploy Docker Hub's `hello-world` image into the verified VM. Images are always named in full, with the registry host and a tag or digest:
+This takes about 35 seconds. Deploy Docker Hub's `hello-world` image into the verified VM. Images are always named in full, with the registry host and a tag or digest:
 
 ```sh
 vcontainer deploy --session demo docker.io/library/hello-world:latest
@@ -356,28 +378,6 @@ vcontainer verify --url "http://$IP:7700" --policy agent-policy.json
 ```
 
 **`vcontainer logs --session NAME`** prints the serial console: kernel, `/init` and container output. **`vcontainer ls`** lists your sessions and what each one runs. **`vcontainer rm --session NAME`** deletes the VM and its firewall rule.
-
-## How it works
-
-vContainer keeps the code you have to trust small:
-
-| Part | Size |
-|---|---|
-| Code we wrote that runs in the VM (`/init` and the protocol) | about 1,450 lines of Rust |
-| CLI and verifier, on your machine | about 950 lines of Rust |
-| Kernel configuration | `allnoconfig` plus 107 options |
-| Build scripts | about 110 lines of shell |
-
-The VM boots a single file: a Linux kernel with a built-in initramfs whose only program is `/init`. There is no bootloader, root disk, systemd or container runtime. Until a container is deployed, the VM runs only the kernel and `/init`, which links musl and crates such as rustls, hpke and tar. The build is designed to be reproducible, and the file's measurement is predicted offline.
-
-The steps below are for the demo platform, Intel TDX on Google Cloud C3.
-
-1. **Boot and measure.** `vcontainer run` creates the VM. Before anything else, `/init` records a fresh key for this boot, then your public key, in a hardware register that can only be extended.
-2. **Verify the empty VM.** Your machine asks the VM for a quote over a fresh nonce and checks it: Intel's signature, Google's signed firmware, the exact boot image and the recorded keys.
-3. **Launch, verify, commit.** `vcontainer deploy` sends a launch signed with your key: the image digest, the container settings, and the secrets, encrypted to the boot key. `/init` records the launch. Your machine checks that the record is the launch it sent, and only then lets the VM pull.
-4. **Pull and run.** The VM pulls the image by digest, checks every layer and starts the container. Secrets appear as files in `/run/secrets`.
-
-As a result, you have verified the VM's boot and its empty state before it pulls anything, and secrets reach only that VM. The container cannot extend the register or request quotes over its own data, so it cannot forge the evidence.
 
 ## Trust
 
