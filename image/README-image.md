@@ -15,9 +15,21 @@ Design: `docs/design/DESIGN.md` §4.1, §4.2, §14.
 | `tools/tdx-probe/` | M0 probe used as `/init` (`build.sh`, `gce-run.sh`) |
 | `tools/predict-rtmr1.py` | offline RTMR1 prediction; checks it against a probe log |
 
+Build an image with the probe as `/init`:
+
 ```sh
-scripts/build-image.sh --dev --init "$(tools/tdx-probe/build.sh)"   # probe as /init
-tools/tdx-probe/gce-run.sh c3-standard-4 c3-standard-8               # real TDX, cleans up
+scripts/build-image.sh --dev --init "$(tools/tdx-probe/build.sh)"
+```
+
+Boot it on real TDX VMs and collect their serial logs (the script deletes the VMs afterwards):
+
+```sh
+tools/tdx-probe/gce-run.sh c3-standard-4 c3-standard-8
+```
+
+Check the offline RTMR1 prediction against a probe log:
+
+```sh
 python3 tools/predict-rtmr1.py out/BOOTX64.EFI out/disk.raw out/probe-serial.log
 ```
 

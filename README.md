@@ -36,13 +36,38 @@ Requirements:
 
 - Linux x86-64 with Docker and `rustup` (the repository pins Rust 1.95.0).
 - A Google Cloud project with the Compute Engine API enabled and C3 quota in your zone.
-- `gcloud`, logged in, with a default project set (`gcloud config set project PROJECT`).
+- `gcloud`, logged in.
+
+Each block below is one command, so you can copy and run them one at a time.
+
+Set your Google Cloud project (replace `PROJECT` with its ID):
+
+```sh
+gcloud config set project PROJECT
+```
+
+Get the code:
 
 ```sh
 git clone https://github.com/Mengyuan-L/vContainer && cd vContainer
-scripts/build-image.sh                     # /init and the kernel, built in a pinned container
-cargo install --locked --path crates/cli   # the vcontainer CLI
-vcontainer publish                         # create the GCE image, record its expected measurements
+```
+
+Build `/init` and the kernel in a pinned build container. The result is `out/BOOTX64.EFI` and `out/disk.raw`:
+
+```sh
+scripts/build-image.sh
+```
+
+Install the `vcontainer` CLI:
+
+```sh
+cargo install --locked --path crates/cli
+```
+
+Create the GCE image in your project and record its expected measurements:
+
+```sh
+vcontainer publish
 ```
 
 You do this once per release. The first build downloads the kernel source and the build container's packages.
@@ -87,24 +112,37 @@ On a `c3-standard-4`, `vcontainer run` takes about 35 s, and deploying the 43 MB
 
 ### vcontainer run
 
+Create a TDX VM, or reconnect to an existing one, and verify it:
+
 ```sh
-vcontainer run --session NAME [--zone ZONE] [--machine-type TYPE] [--allow-from CIDR]
+vcontainer run --session agent
 ```
 
-Creates a TDX VM, or reconnects to an existing one, and verifies it. The defaults are `us-central1-a` and `c3-standard-4`. The attestation port (7700) and the container's ports are reachable only from `--allow-from`, which defaults to your public IP.
+Options:
+
+- `--zone ZONE` and `--machine-type TYPE` choose where and what to run (defaults: `us-central1-a`, `c3-standard-4`).
+- `--allow-from CIDR` sets who can reach the attestation port (7700) and the container's ports (default: your public IP).
 
 ### vcontainer deploy
 
+Verify the session, send the launch, verify that the VM recorded it, and then let the VM pull and start the image. For the demo agent, first set `REGISTRY` to the registry path you pushed it to:
+
 ```sh
-vcontainer deploy --session NAME IMAGE [OPTIONS] [-- CMD ARGS...]
+REGISTRY=us-central1-docker.pkg.dev/PROJECT/REPO
 ```
 
-Verifies the session, sends the launch, verifies that the VM recorded it, and then lets the VM pull and start the image. `vcontainer pull` is an alias. Options:
+Then deploy it with its API key as a secret:
+
+```sh
+vcontainer deploy --session agent "$REGISTRY/openrouter-agent:v1" -p 8080 --secret OPENROUTER_API_KEY=@openrouter.key
+```
+
+`vcontainer pull` is an alias. Options:
 
 - `-p PORT` opens a container port to the `--allow-from` range.
 - `-e KEY=VALUE` sets an environment variable. Variables are public (see [Trust](#trust)).
 - `--secret NAME=@FILE`, `--secret NAME=VALUE` or `--secret NAME` (taken from your environment) seals a secret to the VM. It appears as `/run/secrets/NAME`.
-- `--user`, `--workdir` and `--entrypoint` override the image's settings.
+- `--user`, `--workdir` and `--entrypoint` override the image's settings, and `-- CMD ARGS...` at the end overrides its command.
 - `--quiet` keeps container output off the serial console.
 - `--resume` finishes a deploy that was interrupted after its launch was sent but before the commit.
 
@@ -112,22 +150,37 @@ Images must be linux/amd64 and fit in RAM. The kernel is minimal; for example, i
 
 ### vcontainer verify
 
+Verify a session again at any time, and write its policy for others:
+
 ```sh
-vcontainer verify --session NAME [--export-policy FILE]
-vcontainer verify --url http://[IP]:7700 --policy FILE
+vcontainer verify --session agent --export-policy agent-policy.json
 ```
 
-Verifies a session again at any time. `--export-policy` writes what a third party needs: the expected measurements, your public key, the instance and the exact launch, but no secrets. With that file, anyone who can reach port 7700 runs the second form, without your key or your cloud account.
+The policy holds what a third party needs: the expected measurements, your public key, the instance and the exact launch, but no secrets. With that file and the session's address in `IP`, anyone who can reach port 7700 verifies the session, without your key or your cloud account:
+
+```sh
+vcontainer verify --url "http://$IP:7700" --policy agent-policy.json
+```
 
 ### vcontainer logs, ls, rm
 
+Print the serial console (kernel, `/init` and container output):
+
 ```sh
-vcontainer logs --session NAME    # the serial console: kernel, /init and container output
-vcontainer ls                     # your sessions and what each one runs
-vcontainer rm --session NAME      # delete the VM and its firewall rule
+vcontainer logs --session agent
 ```
 
-A session bills as a running VM until you remove it.
+List your sessions and what each one runs:
+
+```sh
+vcontainer ls
+```
+
+Delete the VM and its firewall rule. A session bills as a running VM until you do:
+
+```sh
+vcontainer rm --session agent
+```
 
 ## Trust
 
