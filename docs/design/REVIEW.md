@@ -1,97 +1,97 @@
-# v0.1 审阅处置记录
+# v0.1 review dispositions
 
-审阅对象是 [DESIGN-v0.1.md](DESIGN-v0.1.md)，处置结果都已体现在 [DESIGN.md](DESIGN.md)（v0.2）中。
+This review covered v0.1 of the design (not included in this repository). Every disposition is reflected in [DESIGN.md](DESIGN.md) (v0.2).
 
-审阅来源有两个：
-- **Codex**：原文见 [REVIEW-codex.md](REVIEW-codex.md)，下文用 C1–C14 编号。
-- **Claude**：从 4 个视角审阅（TDX G3 完整性、SNP、协议与隔离、最小化/易用/可行性），每个视角配一个反驳者逐条复核，共 39 条。下面的严重度是**复核后**的结论。
+The reviews came from two sources:
+- **Codex**: the original is in [REVIEW-codex-design-r1.md](REVIEW-codex-design-r1.md). Its findings are numbered C1–C14 below.
+- **Claude**: reviewed from 4 perspectives (TDX G3 completeness, SNP, protocol and isolation, minimality/usability/feasibility). Each perspective was paired with a challenger who rechecked every finding, 39 findings in total. The severities below are the conclusions **after** the recheck.
 
-处置说明：
-- **接受**：按发现的建议修复。
-- **部分接受**：采纳其中成立的部分。
-- **驳回**：理由写在表中。
+Dispositions:
+- **Accepted**: fixed as the finding recommends.
+- **Partially accepted**: the valid part was adopted.
+- **Rejected**: the reason is given in the table.
 
-## 高 / 严重
+## High / critical
 
-| 发现 | 来源 | 处置 | v0.2 位置 |
+| Finding | Source | Disposition | Location in v0.2 |
 |---|---|---|---|
-| workload 改写 `/proc/sys/kernel/core_pattern`，内核会以初始命名空间的 root 身份执行它指定的 helper | C1（Critical）；Claude 反驳者也独立复现 | **接受**：`STATIC_USERMODEHELPER` 并设空路径（禁用全部 usermode helper），`COREDUMP=n`，`/proc/sys` 只读，同时遮蔽 sysrq-trigger、kcore 等 | §4.1、§6.5 |
-| 宿主可通过串口 BREAK 或 PS/2 触发 SysRq，dump 出 GPR | Claude tdx-g3（high，确认） | **接受**：`MAGIC_SYSRQ=n`、`VT=n`、`INPUT_KEYBOARD=n`；workload 的 stdin 接 `/dev/null`；PID1 的 fd 0–2 指向 `/dev/null` | §4.1、§4.4、§6.2、§6.5 |
-| 拥有 `CAP_SYS_CHROOT` 的 workload 可以连续 chroot 逃出，碰到继承下来的 configfs、可写 sysfs 和 TEE 设备 | Claude protocol（复核降为 medium） | **接受**：在子 mount namespace 里 `umount2(MNT_DETACH)` 卸掉 init 的全部挂载，改用 `MS_MOVE`+chroot，并去掉 `SYS_CHROOT` | §6.5 |
-| SNP 的 PCR1（宿主 ACPI）和 PCR2/3/6（Driver####、option ROM）没有任何规则 | C2；Claude snp ×2（high，确认） | **接受**：PCR1 改用与 TDX 相同的 ACPI 基线；PCR2/3/6 精确 pin 为只含 SEP 的常量；删掉"SNP 不需要 golden"的说法 | §4.3、§9.3 |
-| golden 和 TOFU 只是在盲收宿主 ACPI | C3；Claude（复核降为 medium） | **接受**：取消交互式 TOFU；golden 只生成提案（包含 iasl dump、diff 和自动检查），须人工审阅签名后才生效；BadAML 补丁强制；文档措辞从"审计"改为"pin" | D11、§9.1、§11、§13 |
-| SVSM 若不指定 manifest 版本，默认 v0 只含 EK，无法绑定 AK | C4；Claude snp（medium，确认） | **接受**：`service_manifest_version=1`，用完整 TPMT_PUBLIC 比对并要求属性正确；拿不到 v1 就放弃 SVSM 模式 | §4.3、§9.3、§14 |
-| 按事件标签作判断（PCR9、SecureBoot 等），而标签不在 digest 覆盖范围内 | C5；Claude snp（low） | **接受**：按事件类型绑定 digest（H(data)、H(VariableData) 或不透明比较）；PCR9 不再评估，`noinitrd` 由构造保证；明确要求 MRTD 必须出现在背书的签名内容里 | §9.2 第 5 步、§4.3 |
-| evidence 里的 `state` 没有被签名覆盖，宿主可把 exited 改成 running | C6 | **接受**：status 绑定进 REPORTDATA 或 qualifyingData；增加 exec 握手；FAILED 为终态 | §6.1、§6.5、§7.1 |
-| 私有仓库凭证的机密性依赖 TLS PKI 和时间 | C7；Claude（low） | **接受**：只用短期 token；token 只发往指定的 registry 主机和 realm 白名单；用 owner 签名的 `issued_at` 作为 RTC 下限 | §6.3、§13 |
-| `snp-hostvtpm` 的信任表述不准确：TIS MMIO 由 VMM 模拟，所以要信任的是整个宿主，而不只是 vTPM | Claude snp（复核降为 medium） | **接受**：措辞改为"信任整个 Google 宿主"，结果标为 `root=amd+google-host`；policy 不写 `allow_host_vtpm` 就 FAIL | §0、§1.3、§4.3 |
-| policy 没有固定 TEE 模式，存在降级风险 | Claude snp（high，部分成立） | **接受**：`policy.tee` 改为必填；不同模式使用互斥的 measurement 选择规则 | §9.1、§9.3 |
+| The workload rewrites `/proc/sys/kernel/core_pattern`, and the kernel runs the helper it names as root in the initial namespace | C1 (Critical); the Claude challenger also reproduced it independently | **Accepted**: `STATIC_USERMODEHELPER` with an empty path (disables all usermode helpers), `COREDUMP=n`, `/proc/sys` read-only, and sysrq-trigger, kcore and similar files are masked as well | §4.1, §6.5 |
+| The host can trigger SysRq through a serial BREAK or PS/2 and dump the GPRs | Claude tdx-g3 (high, confirmed) | **Accepted**: `MAGIC_SYSRQ=n`, `VT=n`, `INPUT_KEYBOARD=n`; the workload's stdin is connected to `/dev/null`; PID1's fds 0–2 point to `/dev/null` | §4.1, §4.4, §6.2, §6.5 |
+| A workload with `CAP_SYS_CHROOT` can escape by repeated chroot and reach the inherited configfs, writable sysfs and TEE devices | Claude protocol (downgraded to medium on recheck) | **Accepted**: in a child mount namespace, `umount2(MNT_DETACH)` removes all of init's mounts; switch to `MS_MOVE`+chroot; drop `SYS_CHROOT` | §6.5 |
+| SNP has no rules at all for PCR1 (host ACPI) or PCR2/3/6 (Driver####, option ROMs) | C2; Claude snp ×2 (high, confirmed) | **Accepted**: PCR1 now uses the same ACPI baseline as TDX; PCR2/3/6 are pinned exactly to constants that contain only SEP; the claim that "SNP needs no golden" is removed | §4.3, §9.3 |
+| Golden and TOFU just blindly accept the host's ACPI | C3; Claude (downgraded to medium on recheck) | **Accepted**: interactive TOFU is removed; golden only produces a proposal (with an iasl dump, a diff and automated checks), which takes effect only after a human reviews and signs it; the BadAML patch is mandatory; the docs now say "pin" instead of "audit" | D11, §9.1, §11, §13 |
+| If SVSM is not given a manifest version, it defaults to v0, which contains only the EK and cannot bind the AK | C4; Claude snp (medium, confirmed) | **Accepted**: `service_manifest_version=1`; compare the full TPMT_PUBLIC and require correct attributes; if v1 is not available, drop SVSM mode | §4.3, §9.3, §14 |
+| Decisions are made on event labels (PCR9, SecureBoot, etc.), but the labels are not covered by the digest | C5; Claude snp (low) | **Accepted**: bind the digest by event type (H(data), H(VariableData) or opaque comparison); PCR9 is no longer evaluated, and `noinitrd` is guaranteed by construction; MRTD is explicitly required to appear in the endorsement's signed contents | §9.2 step 5, §4.3 |
+| The `state` in the evidence is not covered by the signature, so the host can change exited to running | C6 | **Accepted**: status is bound into REPORTDATA or qualifyingData; an exec handshake is added; FAILED is terminal | §6.1, §6.5, §7.1 |
+| Confidentiality of private-registry credentials depends on TLS PKI and the clock | C7; Claude (low) | **Accepted**: short-lived tokens only; tokens are sent only to the named registry host and an allowlist of realms; an owner-signed `issued_at` is used as a lower bound for the RTC | §6.3, §13 |
+| The trust statement for `snp-hostvtpm` is inaccurate: the TIS MMIO is emulated by the VMM, so the whole host must be trusted, not just the vTPM | Claude snp (downgraded to medium on recheck) | **Accepted**: the wording is now "trusts the entire Google host", and the result is labeled `root=amd+google-host`; a policy without `allow_host_vtpm` FAILs | §0, §1.3, §4.3 |
+| The policy does not fix the TEE mode, so there is a downgrade risk | Claude snp (high, partly valid) | **Accepted**: `policy.tee` is now required; the modes use mutually exclusive measurement-selection rules | §9.1, §9.3 |
 
-## 中
+## Medium
 
-| 发现 | 来源 | 处置 | v0.2 位置 |
+| Finding | Source | Disposition | Location in v0.2 |
 |---|---|---|---|
-| 从 defconfig 起步，带进了大量解析宿主设备的驱动；而 `=n` 会被 `select` 改回去（例如 ATA→SCSI） | Claude ×2 | **接受**：改为 allnoconfig、正向白名单、`merge_config.sh -s`，外加 must-be-off 断言 | D10、§4.1 |
-| `VIRT_DRIVERS` 漏写，TDX/SNP 驱动会被静默丢弃 | Claude（确认） | **接受**：加入白名单，并由严格合并兜底 | §4.1 |
-| 多线程 PID1 中 `unshare(CLONE_NEWPID)` 有问题 | C9 | **接受**：改由单线程启动助手执行 `unshare` 再 fork | §6.5 |
-| PID1 没有 resolv.conf；`lo` 没有启用 | C12；Claude ×2 | **接受** | §4.1、§6.2、§6.4 |
-| OCI 替换语义（目录与文件互换、硬链接重发）和 opaque whiteout 的顺序问题 | C11；Claude ×2 | **接受**：每层两遍处理，先 lstat 再删除 | §6.4 |
-| gzip 只解第一个成员、zstd 只解单帧，导致内容被静默截断，与 Docker 看到的不一致 | Claude（确认） | **接受**：改用 `MultiGzDecoder`；读到 EOF 并要求 blob 被完整消费 | §6.4、§8 |
-| launch 缺少原子转换 | C8；Claude（low） | **接受**：先做无副作用的检查，再 CAS；之后失败一律进入终态 | §6.3 |
-| `up` 不幂等，宿主维护之后无法恢复；创建参数与实测过的组合不一致；挂了默认服务账号 | C13；Claude ×2 | **接受**：`up` 改为幂等，固定实测参数，默认 `--no-service-account --no-scopes`，每个实例单独一条防火墙规则 | §11 |
-| golden 以 MRTD 为键，每次固件轮换都会失效；第三方手上没有 platform.json | Claude（部分成立） | **接受**：ACPI 改按机型为键；`up` 把相关基线拷进自包含的 policy | §9.1 |
-| SNP 规范前后矛盾（PCR8 被放进固件日志 replay、REPORT_DATA 写法不一致） | C10；Claude（low） | **接受**：PCR8 单独 replay；boot_id 统一从 `ledger[0]` 取 | §4.3、§9.3 |
-| MROWNER 实例绑定是可选项，第三方可以用你公开的 owner key 劫持 launch | Claude（low） | **接受**：`up` 强制检查，并写入 policy | §4.2 |
-| 只认 `UpToDate`：Intel 发布 TCB recovery 后整个机群都会 FAIL | Claude（low） | **接受**：按固定的 eval number 取 collateral，更新的状态只作警告 | §9.2 |
-| tmpfs 内存峰值过高；下载大小没有上限 | Claude（low） | **接受**：逐层流水线处理，读到 `descriptor.size+1` 即中止 | §6.3 |
+| Starting from defconfig pulls in many drivers that parse host devices, and `=n` gets turned back on by `select` (for example ATA→SCSI) | Claude ×2 | **Accepted**: switch to allnoconfig, a positive allowlist and `merge_config.sh -s`, plus must-be-off assertions | D10, §4.1 |
+| `VIRT_DRIVERS` was left out, so the TDX/SNP drivers are silently dropped | Claude (confirmed) | **Accepted**: added to the allowlist, with strict merging as a backstop | §4.1 |
+| `unshare(CLONE_NEWPID)` in a multithreaded PID1 is a problem | C9 | **Accepted**: a single-threaded launch helper now does the `unshare` and then forks | §6.5 |
+| PID1 has no resolv.conf; `lo` is not brought up | C12; Claude ×2 | **Accepted** | §4.1, §6.2, §6.4 |
+| OCI replacement semantics (a directory and a file replacing each other, hard links emitted again) and the ordering of opaque whiteouts | C11; Claude ×2 | **Accepted**: two passes per layer, lstat first, then delete | §6.4 |
+| gzip decodes only the first member and zstd only a single frame, so content is silently truncated and differs from what Docker sees | Claude (confirmed) | **Accepted**: use `MultiGzDecoder`; read to EOF and require the blob to be fully consumed | §6.4, §8 |
+| launch has no atomic transition | C8; Claude (low) | **Accepted**: first run the side-effect-free checks, then CAS; any failure after that goes to a terminal state | §6.3 |
+| `up` is not idempotent and cannot recover after host maintenance; the creation parameters differ from the tested combination; the default service account is attached | C13; Claude ×2 | **Accepted**: `up` is now idempotent, uses the fixed tested parameters, defaults to `--no-service-account --no-scopes`, and uses a separate firewall rule per instance | §11 |
+| Golden is keyed by MRTD, so every firmware rotation invalidates it; third parties do not have platform.json | Claude (partly valid) | **Accepted**: ACPI is now keyed by machine type; `up` copies the relevant baseline into a self-contained policy | §9.1 |
+| The SNP specification contradicts itself (PCR8 is put into the firmware log replay; REPORT_DATA is written inconsistently) | C10; Claude (low) | **Accepted**: PCR8 is replayed separately; boot_id is always taken from `ledger[0]` | §4.3, §9.3 |
+| MROWNER instance binding is optional, so a third party can use the owner's public key to hijack the launch | Claude (low) | **Accepted**: `up` enforces the check and writes it into the policy | §4.2 |
+| Accepting only `UpToDate` means the whole fleet FAILs once Intel publishes a TCB recovery | Claude (low) | **Accepted**: fetch collateral at a fixed eval number; a newer status only produces a warning | §9.2 |
+| tmpfs peak memory use is too high; download size has no limit | Claude (low) | **Accepted**: process layers one at a time as a pipeline, and abort once `descriptor.size+1` bytes have been read | §6.3 |
 
-## 低、驳回或延后
+## Low, rejected or deferred
 
-| 发现 | 处置 |
+| Finding | Disposition |
 |---|---|
-| G4 写"零 C 依赖"不实（ring、musl） | 接受，已改写 G4 |
-| config 和 env 实际上是公开的，§0 和 §13 没有说清 | 接受，已在 §0、§7.2、§13 写明 |
-| RTMR1 存在合法的 EBS 失败变体 | 接受，RTMR1 改为语法检查，允许一个 `EBS Failed` 事件 |
-| DHCP 若单播回复会收不到 | 接受，设置 BROADCAST 标志；写入 M0 |
-| SMBIOS、CPUID 0x4000_00xx 等输入没有列清 | 接受：`DMI=n`、`nopv`；新增输入清单 §4.4 |
-| 秘密密文没有进账本 | 部分接受：账本 #2 加上 `SHA-512(enc‖ct)`，供事后审计 |
-| TD HOB 和 CFV 可以离线推导，不必走 golden | 延后到 v2（大约 150 行）；v1 用审阅过的基线 |
-| 应用连接没有认证（宿主可以在 :7700 转发真实 evidence，同时替换 :8080） | 接受，用最小方案：config 增加 `tls_spki_sha256`，私钥经 `--secret` 投递 |
-| 继承 fd 导致 TPM 和 sysfs 泄露 | **驳回**（复核者已驳回）：Rust std 默认 O_CLOEXEC。作为保险仍加了一行 `close_range` |
-| capability 应改为空白名单 | **驳回**（复核者已驳回）：会破坏 gosu、chown 一类常见镜像，与 G1 冲突；只去掉 `MKNOD` 和 `SYS_CHROOT` |
-| 内核 LPE 攻击面（io_uring、userfaultfd、BPF） | 部分接受：allnoconfig 加断言即可覆盖，不需要额外代码 |
-| 改用 metadata 自启动作为默认模式（Claude cut） | **驳回作默认**：agent 需要秘密，而 G3 的核心是"先验证后投递"。列为 v1.1 可选项（§15） |
-| 彻底删掉 SNP-vTPM（Claude cut） | **部分接受**：你明确要一个 SNP 方案，所以保留，但改名为 `snp-hostvtpm`，必须显式授权；是否发布 SNP 由 M0 第 6 项决定 |
-| 删除 MROWNER 和实例绑定（Claude cut） | 驳回：成本约 10 行，能防非 Google 的劫持 |
-| 删除 init 自查寄存器初值（Claude cut） | 接受：verifier 从零 replay 已经能 fail closed |
-| UTS/IPC namespace 用处不大（C cut） | 接受，只保留 NEWNS 和 NEWPID |
-| SNP 的 VCEK 和背书只用 KDS/GCS 加缓存，不用 auxblob（Claude cut） | 接受（auxblob 的内容尚未实测） |
-| 去掉 `SEV_CAPABLE`（Claude cut） | 接受 |
+| G4's claim of "zero C dependencies" is untrue (ring, musl) | Accepted; G4 rewritten |
+| config and env are in fact public, and §0 and §13 do not say so clearly | Accepted; now stated in §0, §7.2, §13 |
+| RTMR1 has a legitimate EBS-failure variant | Accepted; RTMR1 now uses a syntax check that allows one `EBS Failed` event |
+| If the DHCP server replies by unicast, the reply is not received | Accepted; the BROADCAST flag is set; added to M0 |
+| Inputs such as SMBIOS and CPUID 0x4000_00xx are not fully listed | Accepted: `DMI=n`, `nopv`; a new input inventory in §4.4 |
+| The secret ciphertext is not recorded in the ledger | Partially accepted: ledger #2 now includes `SHA-512(enc‖ct)` for after-the-fact audit |
+| TD HOB and CFV can be derived offline, without going through golden | Deferred to v2 (about 150 lines); v1 uses a reviewed baseline |
+| The application connection is not authenticated (the host can forward genuine evidence on :7700 while replacing :8080) | Accepted with a minimal fix: config gains `tls_spki_sha256`, and the private key is delivered through `--secret` |
+| Inherited fds leak the TPM and sysfs | **Rejected** (the challenger already rejected it on recheck): Rust std uses O_CLOEXEC by default. One `close_range` line was still added as insurance |
+| Capabilities should be an empty allowlist | **Rejected** (the challenger already rejected it on recheck): it would break common images that use gosu, chown and the like, which conflicts with G1; only `MKNOD` and `SYS_CHROOT` are dropped |
+| Kernel LPE attack surface (io_uring, userfaultfd, BPF) | Partially accepted: allnoconfig plus assertions covers it; no extra code is needed |
+| Make metadata-driven self-start the default mode (Claude cut) | **Rejected as the default**: the agent needs secrets, and the core of G3 is "verify before delivering". Listed as a v1.1 option (§15) |
+| Remove SNP-vTPM entirely (Claude cut) | **Partially accepted**: the owner explicitly wants an SNP option, so it stays, but it is renamed `snp-hostvtpm` and requires explicit authorization; whether SNP ships is decided by M0 item 6 |
+| Remove MROWNER and instance binding (Claude cut) | Rejected: it costs about 10 lines and prevents hijacking by parties other than Google |
+| Remove init's self-check of the initial register values (Claude cut) | Accepted: the verifier's replay from zero already fails closed |
+| UTS/IPC namespaces add little (C cut) | Accepted; only NEWNS and NEWPID are kept |
+| For SNP, get the VCEK and endorsements only from KDS/GCS plus a cache, not from auxblob (Claude cut) | Accepted (the contents of auxblob have not yet been checked on real hardware) |
+| Drop `SEV_CAPABLE` (Claude cut) | Accepted |
 
-## 仍需你决定的问题
-1. **是否发布 SNP**：取决于 M0 第 6 项（SVSM 的 manifest v1 能否拿到）。若 SVSM 不可用，是"只发布 TDX"，还是"同时发布带警告的 `snp-hostvtpm`"？
-2. **ACPI 基线由谁审阅、多久更新一次**：这是 TDX 方案主要的运维成本。可以参考 Tinfoil 的 hardware-measurements 仓库，由维护者签名发布。
-3. **内核版本**：6.18 LTS 加 MS_MOVE+chroot，还是直接上 7.x（有 nullfs，可用 pivot_root，但不是 LTS）？
+## Open questions for the owner
+1. **Whether to ship SNP**: this depends on M0 item 6 (whether SVSM manifest v1 can be obtained). If SVSM is not available, should the release be "TDX only", or "also ship `snp-hostvtpm` with a warning"?
+2. **Who reviews the ACPI baseline, and how often it is updated**: this is the main operational cost of the TDX design. One model is Tinfoil's hardware-measurements repository, with releases signed by the maintainers.
+3. **Kernel version**: 6.18 LTS with MS_MOVE+chroot, or go straight to 7.x (it has nullfs, so pivot_root can be used, but it is not LTS)?
 
 ---
 
-# 第二轮：Codex 审阅 v0.2（[REVIEW-codex-r2.md](REVIEW-codex-r2.md)）→ v0.3
+# Round 2: Codex review of v0.2 ([REVIEW-codex-design-r2.md](REVIEW-codex-design-r2.md)) → v0.3
 
-Codex 对第一轮 14 条的复核结果：C1、C2、C4、C9、C11、C14 已修复；C3、C5、C6、C7、C8、C10、C12、C13 部分修复。本轮新发现及处置如下：
+Codex's recheck of the 14 round-one findings: C1, C2, C4, C9, C11 and C14 are fixed; C3, C5, C6, C7, C8, C10, C12 and C13 are partly fixed. The new findings in this round and their dispositions:
 
-| # | 发现 | 处置（v0.3） |
+| # | Finding | Disposition (v0.3) |
 |---|---|---|
-| N1 | `merge_config.sh -s` 遇到"请求值 ≠ 生效值"只告警，不会失败；allnoconfig 还缺 `SHMEM`、`MULTIUSER`、`TCG_SVSM` 等基础选项 | 改用 `allnoconfig KCONFIG_ALLCONFIG=miniconfig`，另加独立断言脚本；补齐基础选项；最终以 M0 能启动为准（§4.1、§10） |
-| N2 | TCB 策略在 v0.2 中丢失；按旧 eval 版本取 collateral，最终会遇到 HTTP 410 | 状态和 advisory 由我们显式检查，加上 `nextUpdate`；eval 版本取下限；`tcb_grace_until` 带截止日期（§9.2 第 1 步） |
-| N3 | `close_range` 会把握手管道一起关掉；子进程退出也会读到 EOF | 改用 `CLOSE_RANGE_CLOEXEC`；失败路径写 `(step, errno)`；`running` 的语义收窄为"execve 已提交，并且取 quote 时进程仍存活"，用 `waitpid(WNOHANG)` 确认（§6.5） |
-| N4 | 状态与账本前缀互相矛盾；快照不一致 | 给出状态与账本前缀对照表；extend、状态变化、生成 evidence 共用一把锁；只有账本中存在 #2 时才比对 config（§5、§9.2） |
-| N5 | 事件白名单会拒绝真实证据：index 0 的 `NO_ACTION`、SNP 的 S-CRTM/NonHostInfo、PCR5 的 SEP | `NO_ACTION` 单独处理；补充 SNP 的事件类型；PCR5 的语法以 M0 实测为准（§4.3、§9.2 第 4–5 步） |
-| N6 | `issued_at − 299s` 仍然能通过；origin 没有包含 scheme 和 port | 用 `clock_settime(max(RTC, issued_at))` 设定时间下限；授权单位改为完整的 HTTPS origin（§6.3） |
-| N7 | SVSM 模式同样需要读 AK 模板；SVSM 下没有实例身份 | 两种模式都读模板（NV index 由 M0 确认）；`snp-svsm` 的实例绑定为空（§4.3、§9.1） |
-| N8 | `up` 在 STARTING、PULLING、FAILED、EXITED 状态下的行为没有定义 | 每个状态都写明了分支；增加 `--recreate`，通过 reset 获得一次新的启动（§11） |
-| N9 | "自包含"的 policy 里缺少 release 身份 | 把 PE、GPT 的 digest、RTMR1 两条轨迹、各 PCR 期望值拷入 policy（§9.1） |
-| N10 | `acpi=1` 时缺少精确的绑定公式 | 定义 canonical `acpi_manifest` 及其在 TDX/SNP 下的绑定方式，并写明它与 RTMR0 之间没有密码学关联（§7.1） |
-| N11 | RTMR1 重试轨迹与 M0 的"恰好 6 个事件"互相矛盾 | release.json 同时给出两条轨迹（§4.2、§14） |
-| 阻断项 | G3 的时序：远端在拉取之前能否看到 config 的度量 | **接受**：新增 prepare → attest → commit 两阶段（STARTING 状态 + `POST /v1/commit`），约 25 行，CLI 自动完成（§0、§6.3、§7.3） |
-| 阻断项 | ACPI 审阅内容与 RTMR0 digest 之间没有密码学关联 | **接受为已声明的残余风险**：TDX 的结论改为"在信任已审阅 ACPI digest 的前提下满足 G3"；真正建立关联要靠复原 pre-patch blob，列入 v2（§13.1、§15） |
-| 阻断项 | M0 和对抗启动测试尚未完成 | 仍是开工前提（§14） |
+| N1 | `merge_config.sh -s` only warns, and does not fail, when the requested value ≠ the effective value; allnoconfig is also missing basic options such as `SHMEM`, `MULTIUSER` and `TCG_SVSM` | Switch to `allnoconfig KCONFIG_ALLCONFIG=miniconfig`, plus a separate assertion script; add the missing basic options; the final test is that M0 boots (§4.1, §10) |
+| N2 | The TCB policy was lost in v0.2; fetching collateral by an old eval version will eventually hit HTTP 410 | We check the status and advisories explicitly, and add `nextUpdate`; the eval version is a lower bound; `tcb_grace_until` carries a deadline (§9.2 step 1) |
+| N3 | `close_range` also closes the handshake pipe; the parent also reads EOF when the child exits | Use `CLOSE_RANGE_CLOEXEC`; the failure path writes `(step, errno)`; the meaning of `running` is narrowed to "execve was committed, and the process was still alive when the quote was taken", confirmed with `waitpid(WNOHANG)` (§6.5) |
+| N4 | The state and the ledger prefix contradict each other; snapshots are inconsistent | Add a table mapping each state to its ledger prefix; extend, state changes and evidence generation share one lock; config is compared only when #2 is present in the ledger (§5, §9.2) |
+| N5 | The event allowlist rejects real evidence: `NO_ACTION` at index 0, SNP's S-CRTM/NonHostInfo, and the SEP in PCR5 | `NO_ACTION` is handled separately; the SNP event types are added; the PCR5 syntax follows what M0 measures (§4.3, §9.2 steps 4–5) |
+| N6 | `issued_at − 299s` still passes; the origin does not include the scheme and port | Set a time floor with `clock_settime(max(RTC, issued_at))`; the unit of authorization is now the full HTTPS origin (§6.3) |
+| N7 | SVSM mode also needs to read the AK template; there is no instance identity under SVSM | Both modes read the template (the NV index is to be confirmed by M0); the instance binding for `snp-svsm` is empty (§4.3, §9.1) |
+| N8 | The behavior of `up` in the STARTING, PULLING, FAILED and EXITED states is undefined | Every state now has a defined branch; `--recreate` is added, which gets a fresh boot through a reset (§11) |
+| N9 | The "self-contained" policy lacks the release identity | Copy the PE and GPT digests, both RTMR1 traces and every expected PCR value into the policy (§9.1) |
+| N10 | `acpi=1` lacks an exact binding formula | Define a canonical `acpi_manifest` and how it is bound under TDX/SNP, and state that it has no cryptographic link to RTMR0 (§7.1) |
+| N11 | The RTMR1 retry trace contradicts M0's "exactly 6 events" | release.json gives both traces (§4.2, §14) |
+| Blocker | G3 timing: can the remote side see the config measurement before the pull? | **Accepted**: a new two-phase prepare → attest → commit flow (STARTING state + `POST /v1/commit`), about 25 lines, done automatically by the CLI (§0, §6.3, §7.3) |
+| Blocker | There is no cryptographic link between the reviewed ACPI content and the RTMR0 digest | **Accepted as a declared residual risk**: the TDX conclusion becomes "G3 holds, given trust in the reviewed ACPI digest"; actually establishing the link requires recovering the pre-patch blob, which is listed for v2 (§13.1, §15) |
+| Blocker | M0 and the adversarial boot tests are not done yet | Still a prerequisite for starting work (§14) |

@@ -17,7 +17,7 @@ vContainer keeps the code you have to trust small:
 | Part | Size |
 |---|---|
 | Code we wrote that runs in the VM (`/init` and the protocol) | about 1,450 lines of Rust |
-| CLI and verifier, on your machine | about 950 lines of Rust |
+| CLI and verifier, on your machine | about 1,100 lines of Rust |
 | Kernel configuration | `allnoconfig` plus 107 options |
 | Build scripts | about 110 lines of shell |
 

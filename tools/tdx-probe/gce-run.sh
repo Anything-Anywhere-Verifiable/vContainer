@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # M0: boot the probe image on real GCE C3 TDX VMs and collect the serial logs.
 #
-#   tools/tdx-probe/gce-run.sh [SHAPE...]        (default: c3-standard-4)
+#   PROJECT=... BUCKET=... tools/tdx-probe/gce-run.sh [SHAPE...]   (default: c3-standard-4)
 #
 # Uploads out/vcontainer.tar.gz to gs://$BUCKET/vcontainer-probe-<ts>.tar.gz
 # (kept), creates image vcontainer-probe-<ts>, boots one VM per SHAPE in
@@ -11,10 +11,10 @@
 #   scripts/build-image.sh --dev --init "$(tools/tdx-probe/build.sh)"
 set -euo pipefail
 
-PROJECT="${PROJECT:-agentlockbox}"
+PROJECT="${PROJECT:?set PROJECT to your Google Cloud project ID}"
 ZONE="${ZONE:-us-central1-a}"
 REGION="${ZONE%-*}"
-BUCKET="${BUCKET:-agentlockbox-cvm-images}"
+BUCKET="${BUCKET:?set BUCKET to a Cloud Storage bucket in that project}"
 NETWORK=vcontainer
 POLL_TIMEOUT=600
 
