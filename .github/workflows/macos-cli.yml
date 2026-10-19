@@ -1,0 +1,41 @@
+# The vcontainer CLI (and the protocol crate it uses) must build and pass its
+# tests on macOS, on Apple Silicon and on Intel. The boot image is built on
+# Linux and is not part of this check.
+name: macOS CLI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - crates/core/**
+      - crates/cli/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - .github/workflows/macos-cli.yml
+  pull_request:
+    paths:
+      - crates/core/**
+      - crates/cli/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - .github/workflows/macos-cli.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cli:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      # rustup installs the toolchain pinned in rust-toolchain.toml on first use.
+      - run: cargo build --locked -p vcontainer
+      - run: cargo test --locked -p vcontainer -p vcontainer-core
+      - run: cargo run --locked -q -p vcontainer -- --help
