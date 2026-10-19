@@ -9,6 +9,7 @@ license.workspace = true
 vcontainer-core.workspace = true
 anyhow.workspace = true
 authenticode = { version = "0.6", features = ["object"] }
+libc.workspace = true
 clap = { version = "4", features = ["derive"] }
 dcap-qvl = "=0.7.0"
 object = { version = "0.39", default-features = false, features = ["pe", "read_core", "unaligned"] }

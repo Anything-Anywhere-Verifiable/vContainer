@@ -89,11 +89,12 @@ Start a session named `demo`. The CLI creates the VM and verifies it before anyt
 vcontainer run --session demo
 ```
 
-The output lists every check. `[IP]`, `[ZONE]` and `[ID]` stand for your session's values:
+While the CLI verifies, it draws a padlock in text whose shackle drops and locks; other steps show a spinner. Each step then leaves one `✓` line with how long it took, and the result lists every check. `[IP]`, `[ZONE]` and `[ID]` stand for your session's values:
 
 ```console
-creating TDX confidential VM demo (c3-standard-4 in [ZONE])
-waiting for http://[IP]:7700 to boot and answer attestation
+✓ network and firewall ready (9.1s)
+✓ created TDX confidential VM demo: c3-standard-4 in [ZONE] (10.7s)
+✓ demo booted and passed verification (12.7s)
 session demo ([IP], [ZONE]): VERIFIED
   ✓ Intel TDX quote: signature valid, TCB UpToDate (evaluation 20)
   ✓ fresh quote for our nonce; state Waiting
@@ -169,8 +170,11 @@ vcontainer deploy --session agent "$REGISTRY/openrouter-agent:v1" -p 8080 --secr
 ```
 
 ```console
-launching us-central1-docker.pkg.dev/[PROJECT]/vcontainer/openrouter-agent@sha256:acdf834c…
-launch measured and committed; the VM is pulling the image
+✓ session agent passed verification (1.1s)
+✓ sent the signed launch (1.2s)
+✓ the VM measured exactly this launch (1.1s)
+✓ committed: the VM may pull the image (5.7s)
+✓ container Running (15.0s)
 session agent ([IP], [ZONE]): VERIFIED
   ...
   ✓ launch measured before pull: us-central1-docker.pkg.dev/[PROJECT]/vcontainer/openrouter-agent@sha256:acdf834c…

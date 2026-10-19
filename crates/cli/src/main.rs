@@ -4,6 +4,7 @@
 //!   vcontainer deploy --session NAME IMAGE   verify again, then send the container (alias: pull)
 //!   vcontainer verify --session NAME         verify at any time; third parties use --url/--policy
 
+mod anim;
 mod ccel;
 mod endorse;
 mod gcp;
@@ -19,6 +20,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use vcontainer_core::registry::{ImageRef, Registry};
 use vcontainer_core::*;
 
+use anim::Kind;
 use state::{Policy, Session};
 
 /// Oldest acceptable Intel TCB evaluation data number.
@@ -159,27 +161,30 @@ fn run(name: &str, zone: &str, machine_type: &str, allow_from: Option<String>) -
         Some(p) => (p.project, p.zone, p.policy.release, p.policy.launch, p.ports),
         None => (gcp::project()?, zone.to_string(), state::release()?, None, vec![]),
     };
-    gcp::ensure_network(&project)?;
-    gcp::ensure_firewall(&project, name, &ports, &source)?;
+    anim::step(Kind::Wait, "preparing the network and firewall", |_| "network and firewall ready".into(), || {
+        gcp::ensure_network(&project)?;
+        gcp::ensure_firewall(&project, name, &ports, &source)
+    })?;
     let inst = match gcp::instance(&project, name, &zone)? {
         Some(i) if i.status == "RUNNING" => i,
-        Some(i) => {
-            eprintln!("starting {name} (was {})", i.status);
+        Some(i) => anim::step(Kind::Wait, &format!("starting {name} (was {})", i.status), |_| format!("started {name}"), || {
             gcp::start(&project, name, &zone)?;
-            gcp::instance(&project, name, &zone)?.context("instance disappeared")?
-        }
+            gcp::instance(&project, name, &zone)?.context("instance disappeared")
+        })?,
         None => {
-            eprintln!("creating TDX confidential VM {name} ({machine_type} in {zone})");
-            gcp::create_instance(&project, name, &zone, machine_type, &release.image, &release.project, &owner)?;
-            gcp::instance(&project, name, &zone)?.context("instance disappeared")?
+            let what = format!("TDX confidential VM {name}: {machine_type} in {zone}");
+            anim::step(Kind::Wait, &format!("creating {what}"), |_| format!("created {what}"), || {
+                gcp::create_instance(&project, name, &zone, machine_type, &release.image, &release.project, &owner)?;
+                gcp::instance(&project, name, &zone)?.context("instance disappeared")
+            })?
         }
     };
     let instance = state::Instance { id: inst.id.parse()?, project_number: gcp::project_number(&project)?, zone: zone.clone() };
     let policy = Policy { tee: "tdx".into(), owner, release, instance, launch, min_tcb_eval_num: MIN_TCB_EVAL_NUM, min_fw_svn: MIN_FW_SVN };
     let mut s = Session { name: name.into(), project, zone, ip: inst.ip().context("instance has no external IP")?, source, ports, policy };
     state::save_session(&s)?; // so `rm` works even if verification fails
-    eprintln!("waiting for {} to boot and answer attestation", s.url());
-    let v = wait_verified(&s, Duration::from_secs(300))?;
+    let wait = format!("waiting for {} to boot and answer attestation", s.url());
+    let v = anim::step(Kind::Verify, &wait, |_| format!("{name} booted and passed verification"), || wait_verified(&s, Duration::from_secs(300)))?;
     if v.status.state == State::Waiting {
         // A fresh boot: whatever was launched before is gone.
         s.policy.launch = None;
@@ -263,14 +268,18 @@ fn now() -> u64 {
 fn deploy(name: &str, args: Option<LaunchArgs>) -> Result<()> {
     let mut s = state::load_session(name)?;
     let owner = state::owner_key()?;
-    let nonce = verify::nonce();
-    let v = verify::verify(&verify::fetch_evidence(&s.url(), &nonce)?, &nonce, &s.policy)?;
+    let v = anim::step(Kind::Verify, &format!("verifying session {name}"), |_| format!("session {name} passed verification"), || {
+        let nonce = verify::nonce();
+        verify::verify(&verify::fetch_evidence(&s.url(), &nonce)?, &nonce, &s.policy)
+    })?;
     let image = v.config.as_ref().map_or("?", |c| c.image.as_str());
     let payload = match (v.status.state, args) {
-        (State::Waiting, Some(args)) => {
-            eprintln!("session verified: {}", v.claims.join("; "));
-            launch(&mut s, &owner, &v.boot, args)?
-        }
+        (State::Waiting, Some(args)) => anim::step(
+            Kind::Sign,
+            "resolving the image, sealing the secrets and sending the signed launch",
+            |_| "sent the signed launch".into(),
+            || launch(&mut s, &owner, &v.boot, args),
+        )?,
         (State::Starting, None) => {
             let saved = s.policy.launch.as_deref().context("no saved launch to resume")?;
             eprintln!("resuming the launch sent earlier: {image}");
@@ -288,45 +297,51 @@ fn deploy(name: &str, args: Option<LaunchArgs>) -> Result<()> {
 
     // Commit only after seeing this launch measured, before any pull: verify()
     // returns a config only if ledger event 2 is s.policy.launch, i.e. `payload`.
-    let n = verify::nonce();
-    let v2 = verify::verify(&verify::fetch_evidence(&s.url(), &n)?, &n, &s.policy)?;
-    ensure!(
-        v2.status.state == State::Starting && v2.boot == v.boot && v2.config.is_some(),
-        "the session did not measure our launch (state {:?})",
-        v2.status.state
-    );
-    gcp::ensure_firewall(&s.project, name, &s.ports, &s.source)?;
-    let commit = CommitRequest { sig: crypto::sign(&owner, &owner_message("commit", &v.boot, &payload)) };
-    verify::post(&s.url(), "/v1/commit", &commit)?;
-    eprintln!("launch measured and committed; the VM is pulling the image");
-
-    let start = Instant::now();
-    loop {
-        std::thread::sleep(Duration::from_secs(3));
-        if start.elapsed() > Duration::from_secs(1800) {
-            bail!("the container did not start within 30 minutes; see `vcontainer logs --session {name}`");
-        }
+    anim::step(Kind::Verify, "verifying that the VM measured this launch", |_| "the VM measured exactly this launch".into(), || {
         let n = verify::nonce();
-        let Ok(ev) = verify::fetch_evidence(&s.url(), &n) else { continue };
-        // Poll on the (unverified) status; verify fully once it settles.
-        let st: Status = serde_json::from_slice(&ev.status)?;
-        if st.state == State::Waiting {
-            bail!("the VM restarted during the pull; run `vcontainer run --session {name}` and deploy again");
-        }
-        if matches!(st.state, State::Running | State::Exited | State::Failed) {
-            let v = verify::verify(&ev, &n, &s.policy)?;
-            report(&format!("session {name} ({}, {})", s.ip, s.zone), &v);
-            match (v.status.state, v.status.exit_code) {
-                (State::Failed, _) => bail!("the container did not start; see `vcontainer logs --session {name}`"),
-                (State::Exited, Some(c)) if c != 0 => bail!("the container exited with {c}; see `vcontainer logs --session {name}`"),
-                _ => {}
+        let v2 = verify::verify(&verify::fetch_evidence(&s.url(), &n)?, &n, &s.policy)?;
+        ensure!(
+            v2.status.state == State::Starting && v2.boot == v.boot && v2.config.is_some(),
+            "the session did not measure our launch (state {:?})",
+            v2.status.state
+        );
+        Ok(())
+    })?;
+    anim::step(Kind::Sign, "opening the ports and signing the commit", |_| "committed: the VM may pull the image".into(), || {
+        gcp::ensure_firewall(&s.project, name, &s.ports, &s.source)?;
+        let commit = CommitRequest { sig: crypto::sign(&owner, &owner_message("commit", &v.boot, &payload)) };
+        verify::post(&s.url(), "/v1/commit", &commit)
+    })?;
+
+    let v = anim::step(Kind::Container, "the VM is pulling and starting the container", |v: &verify::Verified| format!("container {:?}", v.status.state), || {
+        let start = Instant::now();
+        loop {
+            std::thread::sleep(Duration::from_secs(3));
+            if start.elapsed() > Duration::from_secs(1800) {
+                bail!("the container did not start within 30 minutes; see `vcontainer logs --session {name}`");
             }
-            for p in &s.ports {
-                println!("  port {p}: http://{}:{p}", s.ip);
+            let n = verify::nonce();
+            let Ok(ev) = verify::fetch_evidence(&s.url(), &n) else { continue };
+            // Poll on the (unverified) status; verify fully once it settles.
+            let st: Status = serde_json::from_slice(&ev.status)?;
+            if st.state == State::Waiting {
+                bail!("the VM restarted during the pull; run `vcontainer run --session {name}` and deploy again");
             }
-            return Ok(());
+            if matches!(st.state, State::Running | State::Exited | State::Failed) {
+                return verify::verify(&ev, &n, &s.policy);
+            }
         }
+    })?;
+    report(&format!("session {name} ({}, {})", s.ip, s.zone), &v);
+    match (v.status.state, v.status.exit_code) {
+        (State::Failed, _) => bail!("the container did not start; see `vcontainer logs --session {name}`"),
+        (State::Exited, Some(c)) if c != 0 => bail!("the container exited with {c}; see `vcontainer logs --session {name}`"),
+        _ => {}
     }
+    for p in &s.ports {
+        println!("  port {p}: http://{}:{p}", s.ip);
+    }
+    Ok(())
 }
 
 /// Signs and sends a launch, saved first so that a lost response can be
@@ -362,7 +377,6 @@ fn launch(s: &mut Session, owner: &crypto::SigningKey, boot: &BootInfo, args: La
     s.policy.launch = Some(b64::encode(&payload));
     s.ports = args.ports;
     state::save_session(s)?;
-    eprintln!("launching {}", config.image);
     verify::post(&s.url(), "/v1/launch", &LaunchRequest { issued_at, config: config_bytes, sealed, sig })?;
     Ok(payload)
 }
@@ -376,8 +390,10 @@ fn verify_cmd(session: Option<String>, url: Option<String>, policy: Option<PathB
         (None, Some(url), Some(p)) => (url.clone(), serde_json::from_slice(&std::fs::read(&p)?)?, url),
         _ => bail!("use --session NAME, or --url URL --policy FILE"),
     };
-    let n = verify::nonce();
-    let v = verify::verify(&verify::fetch_evidence(&url, &n)?, &n, &policy)?;
+    let v = anim::step(Kind::Verify, &format!("verifying {label}"), |_| format!("{label} passed verification"), || {
+        let n = verify::nonce();
+        verify::verify(&verify::fetch_evidence(&url, &n)?, &n, &policy)
+    })?;
     if policy.launch.is_some() && v.config.is_none() {
         bail!("the policy's launch is not measured (state {:?}): the VM restarted or the deploy never reached it", v.status.state);
     }
@@ -407,9 +423,10 @@ fn logs(name: &str) -> Result<()> {
 
 fn rm(name: &str) -> Result<()> {
     let s = state::load_session(name)?;
-    gcp::delete(&s.project, &s.name, &s.zone)?;
+    anim::step(Kind::Wait, &format!("deleting VM {name} and its firewall rule"), |_| format!("deleted session {name}"), || {
+        gcp::delete(&s.project, &s.name, &s.zone)
+    })?;
     state::remove_session(name)?;
-    println!("deleted session {name}");
     Ok(())
 }
 
@@ -434,16 +451,18 @@ fn publish(dir: &std::path::Path, bucket: Option<String>) -> Result<()> {
     }
     if gcp::describe(&["compute", "images", "describe", &image, "--format=value(name)"])?.is_none() {
         let object = format!("gs://{bucket}/{image}.tar.gz");
-        eprintln!("uploading {object}");
-        gcp::gcloud(&["storage", "cp", dir.join("vcontainer.tar.gz").to_str().unwrap(), &object])?;
-        eprintln!("creating image {image}");
-        gcp::gcloud(&[
-            "compute", "images", "create", &image,
-            &format!("--source-uri={object}"),
-            "--guest-os-features=UEFI_COMPATIBLE,GVNIC,TDX_CAPABLE",
-            "--storage-location=us-central1",
-            "--labels=vcontainer=image",
-        ])?;
+        anim::step(Kind::Image, &format!("uploading the boot image to {object}"), |_| format!("uploaded {object}"), || {
+            gcp::gcloud(&["storage", "cp", dir.join("vcontainer.tar.gz").to_str().unwrap(), &object])
+        })?;
+        anim::step(Kind::Image, &format!("creating GCE image {image}"), |_| format!("created GCE image {image}"), || {
+            gcp::gcloud(&[
+                "compute", "images", "create", &image,
+                &format!("--source-uri={object}"),
+                "--guest-os-features=UEFI_COMPATIBLE,GVNIC,TDX_CAPABLE",
+                "--storage-location=us-central1",
+                "--labels=vcontainer=image",
+            ])
+        })?;
     }
     state::save_release(&state::Release {
         image: image.clone(),

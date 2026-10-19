@@ -3167,6 +3167,7 @@ dependencies = [
  "authenticode",
  "clap",
  "dcap-qvl",
+ "libc",
  "object",
  "rsa",
  "serde",
