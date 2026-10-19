@@ -106,10 +106,10 @@ session demo ([IP], [ZONE]): VERIFIED
   state: Waiting
 ```
 
-This takes about 35 seconds. Deploy Docker Hub's `hello-world` image into the verified VM:
+This takes about 35 seconds. Deploy Docker Hub's `hello-world` image into the verified VM. Images are always named in full, with the registry host and a tag or digest:
 
 ```sh
-vcontainer deploy --session demo hello-world
+vcontainer deploy --session demo docker.io/library/hello-world:latest
 ```
 
 The CLI resolves the tag to a digest, sends the launch, checks that the VM recorded it, and only then lets the VM pull. The container prints its message and exits, so the session ends in state `Exited (exit code 0)`. Read the message from the serial console:
@@ -212,7 +212,7 @@ vcontainer rm --session agent
 - `--quiet` keeps container output off the serial console.
 - `--resume` finishes a deploy that was interrupted after its launch was sent but before the commit.
 
-Images must be linux/amd64 and fit in RAM. The kernel is minimal; for example, it has no user namespaces or io_uring. A tag is resolved to a digest before launch, and the digest is what gets measured. Public images are pulled without credentials (Docker Hub is tested); private images work on Artifact Registry and gcr.io, where your `gcloud` access token is sealed to the VM.
+`IMAGE` is a full reference, `HOST/REPOSITORY:TAG` or `HOST/REPOSITORY@DIGEST`; nothing is filled in for you. Images must be linux/amd64 and fit in RAM. The kernel is minimal; for example, it has no user namespaces or io_uring. A tag is resolved to a digest before launch, and the digest is what gets measured. Public images are pulled without credentials (Docker Hub is tested); private images work on Artifact Registry and gcr.io, where your `gcloud` access token is sealed to the VM.
 
 **`vcontainer verify --session NAME`** verifies a session again at any time. `--export-policy FILE` also writes what a third party needs: the expected measurements, your public key, the instance and the exact launch, but no secrets:
 

@@ -398,8 +398,8 @@ mod tests {
         let d = format!("sha256:{}", "0".repeat(64));
         assert!(Config::parse(br#"{"image":"docker.io/library/alpine:3"}"#).is_err());
         assert!(Config::parse(br#"{"image":"docker.io/library/alpine@sha256:00"}"#).is_err());
-        assert!(Config::parse(format!(r#"{{"image":"alpine@{d}","bogus":1}}"#).as_bytes()).is_err());
-        let c = Config::parse(format!(r#"{{"image":"alpine@{d}"}}"#).as_bytes()).unwrap();
+        assert!(Config::parse(format!(r#"{{"image":"docker.io/library/alpine@{d}","bogus":1}}"#).as_bytes()).is_err());
+        let c = Config::parse(format!(r#"{{"image":"docker.io/library/alpine@{d}"}}"#).as_bytes()).unwrap();
         assert_eq!(c.logs, Logs::Serial);
     }
 }

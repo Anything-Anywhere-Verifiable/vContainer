@@ -18,15 +18,18 @@ const MAX_MANIFEST: u64 = 4 << 20;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImageRef {
-    /// Registry host as written by the user (`docker.io` for Docker Hub).
+    /// Registry host, always written out (`docker.io` for Docker Hub).
     pub registry: String,
     pub repo: String,
-    /// The digest if there is one, else the tag (`latest` by default).
+    /// The digest if there is one, else the tag.
     pub reference: String,
 }
 
 impl ImageRef {
+    /// A full reference, `HOST/REPOSITORY:TAG` or `HOST/REPOSITORY@DIGEST`:
+    /// nothing is filled in, so what is written is what is pulled.
     pub fn parse(s: &str) -> Result<Self> {
+        let full = "use a full image reference, such as docker.io/library/hello-world:latest";
         let (rest, digest) = match s.split_once('@') {
             Some((r, d)) => {
                 ensure!(valid_digest(d), "unsupported digest {d}");
@@ -36,14 +39,13 @@ impl ImageRef {
         };
         let (registry, path) = match rest.split_once('/') {
             Some((first, path)) if first.contains('.') || first.contains(':') || first == "localhost" => (first, path),
-            _ => ("docker.io", rest),
+            _ => anyhow::bail!("{s:?} names no registry host: {full}"),
         };
         // A tag is the part after the last ':' of the last path component.
         let (repo, tag) = match path.rsplit_once(':') {
             Some((r, t)) if !t.contains('/') => (r, Some(t)),
             _ => (path, None),
         };
-        let repo = if registry == "docker.io" && !repo.contains('/') { format!("library/{repo}") } else { repo.to_string() };
         ensure!(valid_host(registry), "invalid registry host {registry:?}");
         let alnum = |ch: char| ch.is_ascii_alphanumeric();
         ensure!(
@@ -53,7 +55,8 @@ impl ImageRef {
         if let Some(t) = tag {
             ensure!(!t.is_empty() && t.len() <= 128 && t.chars().all(|ch| ch.is_ascii_alphanumeric() || "._-".contains(ch)), "invalid tag {t:?}");
         }
-        Ok(ImageRef { registry: registry.to_string(), repo, reference: digest.or(tag).unwrap_or("latest").to_string() })
+        let reference = digest.or(tag).with_context(|| format!("{s:?} names no tag or digest: {full}"))?;
+        Ok(ImageRef { registry: registry.to_string(), repo: repo.to_string(), reference: reference.to_string() })
     }
 
     /// Host serving the distribution API.
@@ -304,8 +307,11 @@ mod tests {
 
     #[test]
     fn parse_refs() {
-        let r = ImageRef::parse("python:3.13-slim").unwrap();
+        let r = ImageRef::parse("docker.io/library/python:3.13-slim").unwrap();
         assert_eq!((r.registry.as_str(), r.repo.as_str(), r.reference.as_str()), ("docker.io", "library/python", "3.13-slim"));
+        assert!(ImageRef::parse("python:3.13-slim").is_err());
+        assert!(ImageRef::parse("library/python:3.13-slim").is_err());
+        assert!(ImageRef::parse("docker.io/library/python").is_err());
         assert_eq!(r.api_host(), "registry-1.docker.io");
         let d = format!("sha256:{}", "a".repeat(64));
         let r = ImageRef::parse(&format!("us-central1-docker.pkg.dev/p/r/agent@{d}")).unwrap();
@@ -317,9 +323,9 @@ mod tests {
         assert!(ImageRef::parse("attacker.example?.gcr.io/p/i:tag").is_err());
         assert!(ImageRef::parse("user@host.gcr.io/p/i:tag").is_err());
         assert!(ImageRef::parse("us.gcr.io/x/y:1").unwrap().is_google());
-        let r = ImageRef::parse("localhost:5000/x/y").unwrap();
-        assert_eq!((r.registry.as_str(), r.repo.as_str(), r.reference.as_str()), ("localhost:5000", "x/y", "latest"));
-        assert!(ImageRef::parse("reg/a/../b").is_err());
+        let r = ImageRef::parse("localhost:5000/x/y:1").unwrap();
+        assert_eq!((r.registry.as_str(), r.repo.as_str(), r.reference.as_str()), ("localhost:5000", "x/y", "1"));
+        assert!(ImageRef::parse("reg.example/a/../b:1").is_err());
     }
 }
 
@@ -342,7 +348,7 @@ mod live {
     #[test]
     #[ignore]
     fn docker_hub_anonymous() {
-        let c = pull_config("alpine:3.20", None);
+        let c = pull_config("docker.io/library/alpine:3.20", None);
         assert!(c.config.cmd.is_some());
     }
 
