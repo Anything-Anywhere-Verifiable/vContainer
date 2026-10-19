@@ -6,10 +6,22 @@ it is never in the image, the launch config or instance metadata.
 
 Each block below is one command. Run them from this directory, with your OpenRouter key saved in `openrouter.key`.
 
-Set `REGISTRY` to an Artifact Registry repository you can push to:
+Set `REGISTRY` to your Artifact Registry repository. `docker push` sends the image to whatever host and repository its name starts with, so this is where it goes. It is a plain shell variable: `vcontainer` never reads it, and it lasts only for this terminal. Replace `PROJECT` with your project ID:
 
 ```sh
-REGISTRY=us-central1-docker.pkg.dev/PROJECT/REPO
+REGISTRY=us-central1-docker.pkg.dev/PROJECT/vcontainer
+```
+
+Create the repository (once per project):
+
+```sh
+gcloud artifacts repositories create vcontainer --repository-format=docker --location=us-central1
+```
+
+Let Docker authenticate to it through `gcloud` (once per machine; without it the push fails with "Unauthenticated request"):
+
+```sh
+gcloud auth configure-docker us-central1-docker.pkg.dev
 ```
 
 Build and push the image:

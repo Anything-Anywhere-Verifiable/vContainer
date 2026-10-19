@@ -101,7 +101,7 @@ session demo ([IP], [ZONE]): VERIFIED
   ✓ GCE instance [ID] in [ZONE] (MROWNER)
   ✓ firmware: MRTD c1ee9c16e3afc506… endorsed by Google (svn 2)
   ✓ host: a Google Cloud machine (PPID in Google's host registry)
-  ✓ boot image: kernel+initramfs+cmdline+/init with Authenticode 542ff6b7…21cffc12 (release vcontainer-542ff6b77f72, commit 32c2cb47…)
+  ✓ boot image: kernel+initramfs+cmdline+/init with Authenticode 24e25d82…3dc9fd7d (release vcontainer-24e25d8234a7, commit c2f795b3…)
   ✓ ledger: fresh boot key, our owner key
   state: Waiting
 ```
@@ -128,7 +128,7 @@ vcontainer rm --session demo
 
 The [OpenRouter agent](examples/openrouter-agent) is 40 lines of Python. It answers `POST /chat` through OpenRouter with an API key that only the verified VM can read. You build its image yourself, push it to a private Artifact Registry repository, and pass the key as a secret.
 
-Set `REGISTRY` to your repository. It is an ordinary shell variable that only shortens the commands below: `vcontainer` never reads it, and it lasts only for this terminal. Replace `PROJECT` with your project ID; `vcontainer` is the repository name used here:
+Set `REGISTRY` to your repository; `docker push` sends the image to whatever host and repository its name starts with. It is an ordinary shell variable that only shortens the commands below: `vcontainer` never reads it, and it lasts only for this terminal. Replace `PROJECT` with your project ID; `vcontainer` is the repository name used here:
 
 ```sh
 REGISTRY=us-central1-docker.pkg.dev/PROJECT/vcontainer
@@ -247,7 +247,7 @@ Only secret values and the registry token are encrypted, and the container itsel
 
 ## Status
 
-Version 0.1 works end to end on real hardware. The release built from commit 32c2cb4 was rebuilt from scratch, also in a fresh clone, and matched byte for byte.
+Version 0.1 works end to end on real hardware. The release built from commit c2f795b was rebuilt from scratch, also in a fresh clone, and matched byte for byte.
 
 Intel TDX on Google Cloud C3 is a demo platform, not part of the design. The design needs a measured boot, an append-only measurement register and quotes that bind data chosen by the guest. Supporting another platform means replacing the TDX and Google Cloud parts of `/init`, the verifier, the CLI's cloud commands, the kernel configuration and the image build.
 
