@@ -79,7 +79,7 @@ Your owner key and session files live in `~/.config/vcontainer`. The key is crea
 
 ## Usage
 
-A session is one VM, and each boot of it runs one container. You start a session, deploy one container into it, and remove the session when you are done. The two examples below each follow that order.
+A session is one VM, and each boot of it runs one container. You start a session, deploy one container into it, and remove the session when you are done. The three examples below each follow that order.
 
 ### Example 1: a public image
 
@@ -125,7 +125,47 @@ Remove the session. The VM bills until you do, even after its container exits:
 vcontainer rm --session demo
 ```
 
-### Example 2: your own agent image, with an API key
+### Example 2: a public agent with an API key
+
+Docker's [docker-agent](https://docs.docker.com/ai/docker-agent/) image runs an LLM agent and serves it as an OpenAI-compatible chat API. Nothing needs to be built: the image comes from Docker Hub, and the deploy command below gives it a small agent configuration that uses an OpenRouter model.
+
+Save your OpenRouter API key in a file named `openrouter.key` that holds only the key. Then make a random access token for your chat clients; the agent answers only requests that carry it:
+
+```sh
+openssl rand -hex 16 > chat.key
+```
+
+Start a session:
+
+```sh
+vcontainer run --session chat
+```
+
+Deploy the agent with both keys as secrets. The command after `--` writes the agent configuration, reads the two secrets from `/run/secrets`, and starts the chat server on port 8080:
+
+```sh
+vcontainer deploy --session chat docker.io/docker/docker-agent:latest -p 8080 --secret OPENROUTER_API_KEY=@openrouter.key --secret CHAT_TOKEN=@chat.key -e TELEMETRY_ENABLED=false --entrypoint sh -- -c 'printf "agents:\n  root:\n    model: openrouter/openai/gpt-4o-mini\n    instruction: You are a helpful assistant.\n" > /tmp/agent.yaml && OPENROUTER_API_KEY=$(cat /run/secrets/OPENROUTER_API_KEY) CHAT_TOKEN=$(cat /run/secrets/CHAT_TOKEN) exec /docker-agent serve chat /tmp/agent.yaml --listen 0.0.0.0:8080 --api-key-env CHAT_TOKEN'
+```
+
+The agent configuration and the command are part of the measured launch, so `vcontainer verify` shows them; the two keys are not. Set `IP` to the address that `vcontainer deploy` printed (the one below is only an example):
+
+```sh
+IP=203.0.113.7
+```
+
+Ask the agent a question with your access token. Without the token it answers `401`:
+
+```sh
+curl "http://$IP:8080/v1/chat/completions" -H "Authorization: Bearer $(cat chat.key)" -H "Content-Type: application/json" -d '{"model":"root","messages":[{"role":"user","content":"Reply with exactly: vContainer works"}]}'
+```
+
+The token keeps others from using your key, but the traffic is plain HTTP, so the host can read it (see [Trust](#trust)). Remove the session when you are done:
+
+```sh
+vcontainer rm --session chat
+```
+
+### Example 3: your own agent image, with an API key
 
 The [OpenRouter agent](examples/openrouter-agent) is 40 lines of Python. It answers `POST /chat` through OpenRouter with an API key that only the verified VM can read. You build its image yourself, push it to a private Artifact Registry repository, and pass the key as a secret.
 
@@ -247,7 +287,7 @@ Only secret values and the registry token are encrypted, and the container itsel
 
 - the launch configuration (image, command, environment variables and secret names), which anyone can read from the ledger;
 - container output, which goes to the host-readable serial console unless you pass `--quiet`;
-- traffic to the container's ports, which vContainer does not encrypt. The demo agent serves plain HTTP. To protect this traffic, have the container serve TLS with a key passed through `--secret`, and publish the key's fingerprint with `-e` so clients can check it against the verified evidence.
+- traffic to the container's ports, which vContainer does not encrypt. The agents in the examples serve plain HTTP. To protect this traffic, have the container serve TLS with a key passed through `--secret`, and publish the key's fingerprint with `-e` so clients can check it against the verified evidence.
 
 ## Status
 
