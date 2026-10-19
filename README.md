@@ -8,80 +8,15 @@ An agent in the cloud holds API keys and often handles private data. On an ordin
 - the agent's API keys are encrypted so that only the verified VM can read them;
 - others, such as the agent's users, can check the same evidence with a policy file you give them.
 
-vContainer does this with as little code as possible:
+**Contents:** [Quick start](#quick-start) · [Install](#install) · [More examples](#more-examples) · [Command reference](#command-reference) · [How it works](#how-it-works) · [Trust](#trust) · [Status](#status)
 
-| Part | Size |
-|---|---|
-| Code we wrote that runs in the VM (`/init` and the protocol) | about 1,450 lines of Rust |
-| CLI and verifier, on your machine | about 950 lines of Rust |
-| Kernel configuration | `allnoconfig` plus 107 options |
-| Build scripts | about 110 lines of shell |
+## Quick start
 
-The VM boots a single file: a Linux kernel with a built-in initramfs whose only program is `/init`. There is no bootloader, root disk, systemd or container runtime. Until a container is deployed, the VM runs only the kernel and `/init`, which links musl and crates such as rustls, hpke and tar. The build is designed to be reproducible, and the file's measurement is predicted offline.
+This example runs Docker Hub's `hello-world` image in a verified confidential VM on Google Cloud.
 
-## How it works
+**[Install](#install) first.** You need the `vcontainer` CLI and a boot image published to your Google Cloud project. The Install section gives a command for every step, from installing `rustup` to `vcontainer publish`.
 
-The steps below are for the demo platform, Intel TDX on Google Cloud C3.
-
-1. **Boot and measure.** `vcontainer run` creates the VM. Before anything else, `/init` records a fresh key for this boot, then your public key, in a hardware register that can only be extended.
-2. **Verify the empty VM.** Your machine asks the VM for a quote over a fresh nonce and checks it: Intel's signature, Google's signed firmware, the exact boot image and the recorded keys.
-3. **Launch, verify, commit.** `vcontainer deploy` sends a launch signed with your key: the image digest, the container settings, and the secrets, encrypted to the boot key. `/init` records the launch. Your machine checks that the record is the launch it sent, and only then lets the VM pull.
-4. **Pull and run.** The VM pulls the image by digest, checks every layer and starts the container. Secrets appear as files in `/run/secrets`.
-
-As a result, you have verified the VM's boot and its empty state before it pulls anything, and secrets reach only that VM. The container cannot extend the register or request quotes over its own data, so it cannot forge the evidence.
-
-## Install
-
-Requirements:
-
-- `rustup` (the repository pins Rust 1.95.0). The CLI runs on Linux and on macOS, Apple Silicon or Intel; CI builds and tests it on both Macs.
-- To build the boot image: Linux x86-64 with Docker. On a Mac, build and publish the image on a Linux machine, then copy `~/.config/vcontainer/release.json` to the Mac and install only the CLI.
-- A Google Cloud project with the Compute Engine API enabled and C3 quota in your zone.
-- `gcloud`, logged in.
-
-Each block below is one command, so you can copy and run them one at a time.
-
-Set your Google Cloud project (replace `PROJECT` with its ID):
-
-```sh
-gcloud config set project PROJECT
-```
-
-Get the code:
-
-```sh
-git clone https://github.com/Mengyuan-L/vContainer && cd vContainer
-```
-
-Build `/init` and the kernel in a pinned build container. The result is `out/BOOTX64.EFI` and `out/disk.raw`:
-
-```sh
-scripts/build-image.sh
-```
-
-Install the `vcontainer` CLI:
-
-```sh
-cargo install --locked --path crates/cli
-```
-
-Create the GCE image in your project and record its expected measurements:
-
-```sh
-vcontainer publish
-```
-
-You build and publish the boot image once. It is the same verified image for every container you run: the container image is pulled and measured only when you deploy it, so a new or changed agent image never needs a new boot image. Rebuild only when vContainer itself changes. The first build downloads the kernel source and the build container's packages.
-
-`scripts/build-image.sh` refuses a checkout with uncommitted changes; pass `--dev` while hacking. Anyone can rebuild a release byte for byte from its commit, which `vcontainer publish` records and `vcontainer verify` prints. To see the expected measurements without publishing, run `vcontainer measure`.
-
-Your owner key and session files live in `~/.config/vcontainer`. The key is created on first use.
-
-## Usage
-
-A session is one VM, and each boot of it runs one container. You start a session, deploy one container into it, and remove the session when you are done. The three examples below each follow that order.
-
-### Example 1: a public image
+A session is one VM, and each boot of it runs one container. You start a session, deploy one container into it, and remove the session when you are done. Every example in this README follows that order.
 
 Start a session named `demo`. The CLI creates the VM and verifies it before anything is sent to it:
 
@@ -107,7 +42,7 @@ session demo ([IP], [ZONE]): VERIFIED
   state: Waiting
 ```
 
-This takes about 35 seconds. Deploy Docker Hub's `hello-world` image into the verified VM. Images are always named in full, with the registry host and a tag or digest:
+This takes about 35 seconds. [How it works](#how-it-works) explains what the checks establish. Deploy Docker Hub's `hello-world` image into the verified VM. Images are always named in full, with the registry host and a tag or digest:
 
 ```sh
 vcontainer deploy --session demo docker.io/library/hello-world:latest
@@ -125,7 +60,151 @@ Remove the session. The VM bills until you do, even after its container exits:
 vcontainer rm --session demo
 ```
 
-### Example 2: a public agent with an API key
+Next, [run an agent with an API key](#more-examples).
+
+## Install
+
+The full install needs Linux on x86-64, because the boot image is built there. The CLI also runs on macOS, Apple Silicon or Intel; CI builds and tests it on both Macs. To use a Mac, see [Using a Mac](#using-a-mac) at the end of this section.
+
+Each block below is one command, so you can copy and run them one at a time.
+
+### 1. Install the tools
+
+| Tool | Used for |
+|---|---|
+| `rustup`, a C compiler and `git` | building the `vcontainer` CLI |
+| Docker | building the boot image, and your own container images |
+| `gcloud` | everything the CLI does in Google Cloud |
+
+**A C compiler, `git` and `curl`.** Some of the CLI's cryptography crates include C code. On Debian or Ubuntu:
+
+```sh
+sudo apt update && sudo apt install -y build-essential ca-certificates curl git gnupg
+```
+
+On macOS, install the Xcode Command Line Tools, which include `clang` and `git`:
+
+```sh
+xcode-select --install
+```
+
+**Rust.** Install `rustup`. The repository pins Rust 1.95.0 in `rust-toolchain.toml`, and `rustup` downloads that version the first time you build:
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+```
+
+Load `cargo` into the current terminal. New terminals load it automatically:
+
+```sh
+. "$HOME/.cargo/env"
+```
+
+**Docker.** On Debian or Ubuntu:
+
+```sh
+sudo apt install -y docker.io docker-buildx
+```
+
+The build script runs Docker as your user, so add yourself to the `docker` group. Then log out and back in for the change to take effect:
+
+```sh
+sudo usermod -aG docker "$USER"
+```
+
+On other Linux distributions, follow Docker's [install guide](https://docs.docker.com/engine/install/).
+
+**gcloud.** On Debian or Ubuntu, add Google's package signing key:
+
+```sh
+curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+```
+
+Add Google's package repository:
+
+```sh
+echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list
+```
+
+Install the Google Cloud CLI:
+
+```sh
+sudo apt update && sudo apt install -y google-cloud-cli
+```
+
+On macOS, with [Homebrew](https://brew.sh):
+
+```sh
+brew install --cask gcloud-cli
+```
+
+On other systems, follow Google's [install guide](https://cloud.google.com/sdk/docs/install).
+
+### 2. Set up Google Cloud
+
+You need a Google Cloud project with billing enabled and quota for C3 machines in your zone. The default session is a `c3-standard-4` in `us-central1-a`, which uses 4 C3 CPUs.
+
+Log in:
+
+```sh
+gcloud auth login
+```
+
+Set your project. Replace `PROJECT` with its ID:
+
+```sh
+gcloud config set project PROJECT
+```
+
+Enable the Compute Engine API:
+
+```sh
+gcloud services enable compute.googleapis.com
+```
+
+### 3. Build and publish vContainer
+
+Get the code:
+
+```sh
+git clone https://github.com/Mengyuan-L/vContainer && cd vContainer
+```
+
+Install the `vcontainer` CLI:
+
+```sh
+cargo install --locked --path crates/cli
+```
+
+Build `/init` and the kernel in a pinned build container. The result is `out/BOOTX64.EFI` and `out/disk.raw`. The first build downloads the kernel source and the build container's packages:
+
+```sh
+scripts/build-image.sh
+```
+
+Create the GCE image in your project and record its expected measurements:
+
+```sh
+vcontainer publish
+```
+
+You are ready for the [Quick start](#quick-start).
+
+You build and publish the boot image once. It is the same verified image for every container you run: the container image is pulled and measured only when you deploy it, so a new or changed agent image never needs a new boot image. Rebuild only when vContainer itself changes.
+
+`scripts/build-image.sh` refuses a checkout with uncommitted changes; pass `--dev` while hacking. Anyone can rebuild a release byte for byte from its commit, which `vcontainer publish` records and `vcontainer verify` prints. To see the expected measurements without publishing, run `vcontainer measure`.
+
+Your owner key and session files live in `~/.config/vcontainer`. The key is created on first use.
+
+### Using a Mac
+
+Build and publish the boot image on a Linux machine, as above. On the Mac, install the C compiler, Rust and `gcloud` from step 1, do step 2, then clone the code and install the CLI from step 3. Last, copy `~/.config/vcontainer/release.json` from the Linux machine to the same path on the Mac.
+
+To build your own container images on a Mac, as in the [last example](#your-own-agent-image-with-an-api-key), you also need Docker Desktop.
+
+## More examples
+
+### A public agent with an API key
 
 Docker's [docker-agent](https://docs.docker.com/ai/docker-agent/) image runs an LLM agent and serves it as an OpenAI-compatible chat API. Nothing needs to be built: the image comes from Docker Hub, and the deploy command below gives it a small agent configuration that uses an OpenRouter model.
 
@@ -165,7 +244,7 @@ The token keeps others from using your key, but the traffic is plain HTTP, so th
 vcontainer rm --session chat
 ```
 
-### Example 3: your own agent image, with an API key
+### Your own agent image, with an API key
 
 The [OpenRouter agent](examples/openrouter-agent) is 40 lines of Python. It answers `POST /chat` through OpenRouter with an API key that only the verified VM can read. You build its image yourself, push it to a private Artifact Registry repository, and pass the key as a secret.
 
@@ -173,6 +252,12 @@ Set `REGISTRY` to your repository; `docker push` sends the image to whatever hos
 
 ```sh
 REGISTRY=us-central1-docker.pkg.dev/PROJECT/vcontainer
+```
+
+Enable the Artifact Registry API (once per project):
+
+```sh
+gcloud services enable artifactregistry.googleapis.com
 ```
 
 Create the repository (once per project):
@@ -240,7 +325,7 @@ Remove the session when you are done:
 vcontainer rm --session agent
 ```
 
-### Command reference
+## Command reference
 
 **`vcontainer run --session NAME`** creates a VM, or reconnects to an existing one, and verifies it. Options:
 
@@ -271,6 +356,28 @@ vcontainer verify --url "http://$IP:7700" --policy agent-policy.json
 ```
 
 **`vcontainer logs --session NAME`** prints the serial console: kernel, `/init` and container output. **`vcontainer ls`** lists your sessions and what each one runs. **`vcontainer rm --session NAME`** deletes the VM and its firewall rule.
+
+## How it works
+
+vContainer keeps the code you have to trust small:
+
+| Part | Size |
+|---|---|
+| Code we wrote that runs in the VM (`/init` and the protocol) | about 1,450 lines of Rust |
+| CLI and verifier, on your machine | about 950 lines of Rust |
+| Kernel configuration | `allnoconfig` plus 107 options |
+| Build scripts | about 110 lines of shell |
+
+The VM boots a single file: a Linux kernel with a built-in initramfs whose only program is `/init`. There is no bootloader, root disk, systemd or container runtime. Until a container is deployed, the VM runs only the kernel and `/init`, which links musl and crates such as rustls, hpke and tar. The build is designed to be reproducible, and the file's measurement is predicted offline.
+
+The steps below are for the demo platform, Intel TDX on Google Cloud C3.
+
+1. **Boot and measure.** `vcontainer run` creates the VM. Before anything else, `/init` records a fresh key for this boot, then your public key, in a hardware register that can only be extended.
+2. **Verify the empty VM.** Your machine asks the VM for a quote over a fresh nonce and checks it: Intel's signature, Google's signed firmware, the exact boot image and the recorded keys.
+3. **Launch, verify, commit.** `vcontainer deploy` sends a launch signed with your key: the image digest, the container settings, and the secrets, encrypted to the boot key. `/init` records the launch. Your machine checks that the record is the launch it sent, and only then lets the VM pull.
+4. **Pull and run.** The VM pulls the image by digest, checks every layer and starts the container. Secrets appear as files in `/run/secrets`.
+
+As a result, you have verified the VM's boot and its empty state before it pulls anything, and secrets reach only that VM. The container cannot extend the register or request quotes over its own data, so it cannot forge the evidence.
 
 ## Trust
 
