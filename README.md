@@ -82,7 +82,7 @@ Remove the session. The VM bills until you do, even after its container exits:
 vcontainer rm --session demo
 ```
 
-Next, [run an agent with an API key](#more-examples).
+Next, [run an agent that reviews a pull request](#more-examples).
 
 ## Install
 
@@ -222,130 +222,9 @@ Your owner key and session files live in `~/.config/vcontainer`. The key is crea
 
 Build and publish the boot image on a Linux machine, as above. On the Mac, install the C compiler, Rust and `gcloud` from step 1, do step 2, then clone the code and install the CLI from step 3. Last, copy `~/.config/vcontainer/release.json` from the Linux machine to the same path on the Mac.
 
-To build your own container images on a Mac, as in [Your own agent image](#your-own-agent-image-with-an-api-key), you also need Docker Desktop.
+The examples deploy a published image, so they need no Docker. To build your own container images on a Mac, as in the review agent's [Build your own image](examples/pr-review-agent/README.md#build-your-own-image), you also need Docker Desktop.
 
 ## More examples
-
-### A public agent with an API key
-
-Docker's [docker-agent](https://docs.docker.com/ai/docker-agent/) image runs an LLM agent and serves it as an OpenAI-compatible chat API. Nothing needs to be built: the image comes from Docker Hub, and the deploy command below gives it a small agent configuration that uses an OpenRouter model.
-
-Save your OpenRouter API key in a file named `openrouter.key` that holds only the key. Then make a random access token for your chat clients; the agent answers only requests that carry it:
-
-```sh
-openssl rand -hex 16 > chat.key
-```
-
-Start a session:
-
-```sh
-vcontainer run --session chat
-```
-
-Deploy the agent with both keys as secrets. The command after `--` writes the agent configuration, reads the two secrets from `/run/secrets`, and starts the chat server on port 8080:
-
-```sh
-vcontainer deploy --session chat docker.io/docker/docker-agent:latest -p 8080 --secret OPENROUTER_API_KEY=@openrouter.key --secret CHAT_TOKEN=@chat.key -e TELEMETRY_ENABLED=false --entrypoint sh -- -c 'printf "agents:\n  root:\n    model: openrouter/openai/gpt-4o-mini\n    instruction: You are a helpful assistant.\n" > /tmp/agent.yaml && OPENROUTER_API_KEY=$(cat /run/secrets/OPENROUTER_API_KEY) CHAT_TOKEN=$(cat /run/secrets/CHAT_TOKEN) exec /docker-agent serve chat /tmp/agent.yaml --listen 0.0.0.0:8080 --api-key-env CHAT_TOKEN'
-```
-
-The agent configuration and the command are part of the measured launch, so `vcontainer verify` shows them; the two keys are not. Set `IP` to the address that `vcontainer deploy` printed (the one below is only an example):
-
-```sh
-IP=203.0.113.7
-```
-
-Ask the agent a question with your access token. Without the token it answers `401`:
-
-```sh
-curl "http://$IP:8080/v1/chat/completions" -H "Authorization: Bearer $(cat chat.key)" -H "Content-Type: application/json" -d '{"model":"root","messages":[{"role":"user","content":"Reply with exactly: vContainer works"}]}'
-```
-
-The token keeps others from using your key, but the traffic is plain HTTP, so the host can read it (see [Trust](#trust)). Remove the session when you are done:
-
-```sh
-vcontainer rm --session chat
-```
-
-### Your own agent image, with an API key
-
-The [OpenRouter agent](examples/openrouter-agent) is 40 lines of Python. It answers `POST /chat` through OpenRouter with an API key that only the verified VM can read. You build its image yourself, push it to a private Artifact Registry repository, and pass the key as a secret.
-
-Set `REGISTRY` to your repository; `docker push` sends the image to whatever host and repository its name starts with. It is an ordinary shell variable that only shortens the commands below: `vcontainer` never reads it, and it lasts only for this terminal. Replace `PROJECT` with your project ID; `vcontainer` is the repository name used here:
-
-```sh
-REGISTRY=us-central1-docker.pkg.dev/PROJECT/vcontainer
-```
-
-Enable the Artifact Registry API (once per project):
-
-```sh
-gcloud services enable artifactregistry.googleapis.com
-```
-
-Create the repository (once per project):
-
-```sh
-gcloud artifacts repositories create vcontainer --repository-format=docker --location=us-central1
-```
-
-Let Docker push to it (once per machine):
-
-```sh
-gcloud auth configure-docker us-central1-docker.pkg.dev
-```
-
-Build the agent image and push it:
-
-```sh
-docker build --platform linux/amd64 -t "$REGISTRY/openrouter-agent:v1" examples/openrouter-agent
-```
-
-```sh
-docker push "$REGISTRY/openrouter-agent:v1"
-```
-
-Save your OpenRouter API key in a file named `openrouter.key` that holds only the key. Then start a session:
-
-```sh
-vcontainer run --session agent
-```
-
-Deploy the agent. `--secret` encrypts the key to this VM, and `-p 8080` opens the agent's port to your IP:
-
-```sh
-vcontainer deploy --session agent "$REGISTRY/openrouter-agent:v1" -p 8080 --secret OPENROUTER_API_KEY=@openrouter.key
-```
-
-```console
-✓ session agent passed verification (1.1s)
-✓ sent the signed launch (1.2s)
-✓ the VM measured exactly this launch (1.1s)
-✓ committed: the VM may pull the image (5.7s)
-✓ container Running (15.0s)
-session agent ([IP], [ZONE]): VERIFIED
-  ...
-  ✓ launch measured before pull: us-central1-docker.pkg.dev/[PROJECT]/vcontainer/openrouter-agent@sha256:acdf834c…
-  ✓ container sealed: manifest sha256:b38d15a0…
-  state: Running
-  container: us-central1-docker.pkg.dev/[PROJECT]/vcontainer/openrouter-agent@sha256:acdf834c… env=[] secrets={"OPENROUTER_API_KEY"}
-  port 8080: http://[IP]:8080
-```
-
-Deploying this 43 MB image takes 20–30 seconds. The agent reads its key from `/run/secrets/OPENROUTER_API_KEY`. Set `IP` to the address in the last line (the one below is only an example), then chat with the agent:
-
-```sh
-IP=203.0.113.7
-```
-
-```sh
-curl -X POST "http://$IP:8080/chat" -d '{"message":"Reply with exactly: vContainer works"}'
-```
-
-Remove the session when you are done:
-
-```sh
-vcontainer rm --session agent
-```
 
 ### An agent with tools: review a pull request
 
@@ -494,7 +373,7 @@ What this run keeps from whom:
 - The host cannot read the code the agent reads, the token or the review. The token is sealed to the VM, the agent keeps the code in the VM's encrypted memory, its traffic to GitHub and OpenRouter is HTTPS, the container's output stays off the serial console, and the VM has no SSH or exec.
 - The launch is public: the image, the commit and `PR_URL`, which names your repository.
 - GitHub, OpenRouter and the model's provider see the code. So does anything your GitHub settings let read the repository, such as an app or automatic Copilot code review; vContainer does not change those settings. The host sees which servers the VM connects to and how much data it exchanges with them.
-- The image is the one we publish, pinned by digest. `vcontainer verify` shows which image ran, but not that it was built from [examples/pr-review-agent](examples/pr-review-agent), so you trust its publisher. To run your own build, build that directory, push it to your registry as in [Your own agent image](#your-own-agent-image-with-an-api-key), and deploy that reference instead.
+- The image is the one we publish, pinned by digest. `vcontainer verify` shows which image ran, but not that it was built from [examples/pr-review-agent](examples/pr-review-agent), so you trust its publisher. To run your own build, follow [Build your own image](examples/pr-review-agent/README.md#build-your-own-image) and deploy that reference instead.
 
 Remove the session when you are done. The token and the private repository stay until you delete them on GitHub:
 
@@ -523,13 +402,13 @@ vcontainer rm --session private-review
 **`vcontainer verify --session NAME`** verifies a session again at any time. `--export-policy FILE` also writes what a third party needs: the expected measurements, your public key, the instance and the exact launch, but no secrets:
 
 ```sh
-vcontainer verify --session agent --export-policy agent-policy.json
+vcontainer verify --session public-review --export-policy review-policy.json
 ```
 
 With that file and the session's address in `IP`, anyone who can reach port 7700 verifies the session, without your key or your cloud account:
 
 ```sh
-vcontainer verify --url "http://$IP:7700" --policy agent-policy.json
+vcontainer verify --url "http://$IP:7700" --policy review-policy.json
 ```
 
 **`vcontainer logs --session NAME`** prints the serial console: kernel, `/init` and container output. **`vcontainer ls`** lists your sessions and what each one runs. **`vcontainer rm --session NAME`** deletes the VM and its firewall rule.
@@ -549,7 +428,7 @@ Only secret values and the registry token are encrypted, and the container itsel
 
 - the launch configuration (image, command, environment variables and secret names), which anyone can read from the ledger;
 - container output, which goes to the host-readable serial console unless you pass `--quiet`;
-- traffic to the container's ports, which vContainer does not encrypt. The chat agents in the examples serve plain HTTP. To protect this traffic, have the container serve TLS with a key passed through `--secret`, and publish the key's fingerprint with `-e` so clients can check it against the verified evidence.
+- traffic to the container's ports, which vContainer does not encrypt. To protect this traffic, have the container serve TLS with a key passed through `--secret`, and publish the key's fingerprint with `-e` so clients can check it against the verified evidence.
 
 ## Status
 

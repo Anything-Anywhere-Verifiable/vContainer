@@ -52,7 +52,7 @@ Run it with the key mounted where vContainer puts secrets. Replace the pull requ
 docker run --rm --platform linux/amd64 -v "$PWD/openrouter.key:/run/secrets/OPENROUTER_API_KEY:ro" -e PR_URL=https://github.com/OWNER/REPO/pull/N -e HEAD_SHA=SHA pr-review-agent
 ```
 
-In vContainer, start a session and deploy the image. Replace `IMAGE` with a full image reference, such as one you pushed to Artifact Registry. The agent opens no port:
+In vContainer, start a session and deploy the image. Replace `IMAGE` with a full image reference: the published image that the [main README](../../README.md#more-examples) uses, or [your own build](#build-your-own-image). The agent opens no port:
 
 ```sh
 vcontainer run --session review
@@ -107,3 +107,43 @@ vcontainer deploy --session review IMAGE -e PR_URL=https://github.com/OWNER/REPO
 ```
 
 `vcontainer verify` then lists both secret names, so whoever checks the session can see that the agent posts its review. The review is on the pull request once `verify` shows `state: Exited (exit code 0)`.
+
+## Build your own image
+
+The main README deploys an image that we publish, pinned by digest. To run your own build instead, build this directory and push the image to a private Artifact Registry repository; vContainer pulls it with your `gcloud` access token sealed to the VM. You need Docker (Docker Desktop on a Mac). Run the commands from this directory.
+
+Set `REGISTRY` to your repository; `docker push` sends the image to whatever host and repository its name starts with. It is an ordinary shell variable that only shortens the commands below: `vcontainer` never reads it, and it lasts only for this terminal. Replace `PROJECT` with your project ID; `vcontainer` is the repository name used here:
+
+```sh
+REGISTRY=us-central1-docker.pkg.dev/PROJECT/vcontainer
+```
+
+Enable the Artifact Registry API (once per project):
+
+```sh
+gcloud services enable artifactregistry.googleapis.com
+```
+
+Create the repository (once per project):
+
+```sh
+gcloud artifacts repositories create vcontainer --repository-format=docker --location=us-central1
+```
+
+Let Docker push to it (once per machine):
+
+```sh
+gcloud auth configure-docker us-central1-docker.pkg.dev
+```
+
+Build the image and push it:
+
+```sh
+docker build --platform linux/amd64 -t "$REGISTRY/pr-review-agent:v1" .
+```
+
+```sh
+docker push "$REGISTRY/pr-review-agent:v1"
+```
+
+Then deploy `"$REGISTRY/pr-review-agent:v1"` in place of the published image. `vcontainer deploy` resolves the tag to a digest before the launch, and `vcontainer verify` shows that digest.
