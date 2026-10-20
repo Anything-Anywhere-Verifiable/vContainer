@@ -360,7 +360,7 @@ vcontainer run --session public-review
 Deploy the agent, pinned by digest. The pull request and its commit are environment variables, so they are part of the measured launch; if the pull request has moved to another commit, the agent stops without reviewing it. The agent opens no port:
 
 ```sh
-vcontainer deploy --session public-review docker.io/terryxhx/pr-review-agent@sha256:fc20c8d1369edacbd77405847d94efdca733df17b883a908d0db29e28865776b -e PR_URL=https://github.com/haoxxu/vContainer-review-demo/pull/1 -e HEAD_SHA=0df3f283c37770bc63642d94f77556000835b3e3 --secret OPENROUTER_API_KEY=@openrouter.key
+vcontainer deploy --session public-review docker.io/terryxhx/pr-review-agent@sha256:fc20c8d1369edacbd77405847d94efdca733df17b883a908d0db29e28865776b -e PR_URL=https://github.com/haoxxu/vContainer-review-demo/pull/1 -e HEAD_SHA=688c61413e4e9bf830a58bab3e344d25582b8a33 --secret OPENROUTER_API_KEY=@openrouter.key
 ```
 
 The deploy returns once the container runs, after about 15 seconds. The review takes a minute or two; then verify the session again:
@@ -375,7 +375,7 @@ public-review: VERIFIED
   ✓ launch measured before pull: docker.io/terryxhx/pr-review-agent@sha256:fc20c8d1…
   ✓ container sealed: manifest sha256:fc20c8d1…
   state: Exited (exit code 0)
-  container: docker.io/terryxhx/pr-review-agent@sha256:fc20c8d1… env=["PR_URL=https://github.com/haoxxu/vContainer-review-demo/pull/1", "HEAD_SHA=0df3f283c37770bc63642d94f77556000835b3e3"] secrets={"OPENROUTER_API_KEY"}
+  container: docker.io/terryxhx/pr-review-agent@sha256:fc20c8d1… env=["PR_URL=https://github.com/haoxxu/vContainer-review-demo/pull/1", "HEAD_SHA=688c61413e4e9bf830a58bab3e344d25582b8a33"] secrets={"OPENROUTER_API_KEY"}
 ```
 
 The evidence names the agent's image, the pull request and the commit, and the exit code is part of the quote. Read the review from the serial console; `sed` skips the boot messages before it:
@@ -385,24 +385,25 @@ vcontainer logs --session public-review | sed -n '/^pr-review-agent:/,$p'
 ```
 
 ```console
-pr-review-agent: haoxxu/vContainer-review-demo#1 at 0df3f283c377, model anthropic/claude-sonnet-5.5
+pr-review-agent: haoxxu/vContainer-review-demo#1 at 688c61413e4e, model anthropic/claude-sonnet-5.5
   tool get_diff {"path": "notes/listing.py"}
   tool list_dir {"path": "notes"}
   tool read_file {"path": "notes/cache.py"}
   tool read_file {"path": "notes/db.py"}
+  tool get_diff {"path": "notes/__init__.py"}
 
-review of haoxxu/vContainer-review-demo#1 at 0df3f283c377: 4 comments
+review of haoxxu/vContainer-review-demo#1 at 688c61413e4e: 4 comments
 
-Four defects in notes/listing.py: the cache is used incorrectly, the pagination is off by one page, the query is open to SQL injection, and the cache key ignores the connection.
+The new `list_notes` has four defects. Two of them make it wrong on every call, and one is a SQL injection. I read the diff and `notes/cache.py` and `notes/db.py`. I did not run the code.
 
 notes/listing.py:16
-  `Cache.get` raises KeyError on a miss or expiry. It never returns None, as its docstring in cache.py says. The first call for any key therefore raises KeyError and `list_notes` never works. Wrap the call in try/except KeyError and fall through to the query. Also, an empty list is a valid cached value, so don't test the result for None.
+  `Cache.get` raises KeyError on a miss or an expired entry. It never returns None, as its docstring in cache.py says. So the first call for any key raises KeyError and `list_notes` never reaches the database. Wrap the lookup in try/except KeyError and fall through to the query.
 ...
-tokens: 6387 prompt, 898 completion
+tokens: 9651 prompt, 1067 completion
 vcontainer: container exited with 0
 ```
 
-In this run the agent found the three planted bugs and one more real problem. It found the cache bug by reading `notes/cache.py`, a file the pull request does not change. The review varies from run to run.
+In this run the agent found the three planted bugs and further problems with the cache. It found the cache bug by reading `notes/cache.py`, a file the pull request does not change. The review varies from run to run.
 
 The OpenRouter key is sealed to the VM, and the model never sees it: the agent calls OpenRouter itself and gives the model only its tools. Everything else here is public: the repository, the launch and the review on the serial console. OpenRouter and the model's provider see the code under review. Remove the session when you are done:
 
@@ -455,7 +456,7 @@ vcontainer run --session private-review
 Deploy the same image as in the previous example. The copy keeps the demo's commits, so `HEAD_SHA` does not change. With `GITHUB_TOKEN`, the agent posts its review to the pull request and prints nothing of the repository, and `--quiet` keeps even that off the serial console:
 
 ```sh
-vcontainer deploy --session private-review docker.io/terryxhx/pr-review-agent@sha256:fc20c8d1369edacbd77405847d94efdca733df17b883a908d0db29e28865776b -e PR_URL=https://github.com/OWNER/review-demo/pull/1 -e HEAD_SHA=0df3f283c37770bc63642d94f77556000835b3e3 --secret OPENROUTER_API_KEY=@openrouter.key --secret GITHUB_TOKEN=@github.key --quiet
+vcontainer deploy --session private-review docker.io/terryxhx/pr-review-agent@sha256:fc20c8d1369edacbd77405847d94efdca733df17b883a908d0db29e28865776b -e PR_URL=https://github.com/OWNER/review-demo/pull/1 -e HEAD_SHA=688c61413e4e9bf830a58bab3e344d25582b8a33 --secret OPENROUTER_API_KEY=@openrouter.key --secret GITHUB_TOKEN=@github.key --quiet
 ```
 
 After a minute or two, verify the session:
@@ -468,7 +469,7 @@ vcontainer verify --session private-review
 private-review: VERIFIED
   ...
   state: Exited (exit code 0)
-  container: docker.io/terryxhx/pr-review-agent@sha256:fc20c8d1… env=["PR_URL=https://github.com/OWNER/review-demo/pull/1", "HEAD_SHA=0df3f283c37770bc63642d94f77556000835b3e3"] secrets={"GITHUB_TOKEN", "OPENROUTER_API_KEY"}
+  container: docker.io/terryxhx/pr-review-agent@sha256:fc20c8d1… env=["PR_URL=https://github.com/OWNER/review-demo/pull/1", "HEAD_SHA=688c61413e4e9bf830a58bab3e344d25582b8a33"] secrets={"GITHUB_TOKEN", "OPENROUTER_API_KEY"}
 ```
 
 Both secret names are part of the evidence, so whoever checks the session can see that the agent had a GitHub token. The serial console shows the container start and exit, and nothing in between:
@@ -482,7 +483,7 @@ vcontainer: container started: python3 -u /app/agent.py
 vcontainer: container exited with 0
 ```
 
-Open the pull request to read the review. It is a comment review of commit `0df3f283`, posted by the account that owns the token, with inline comments on the lines it discusses:
+Open the pull request to read the review. It is a comment review of commit `688c6141`, posted by the account that owns the token, with inline comments on the lines it discusses:
 
 ```sh
 gh pr view 1 --repo OWNER/review-demo --web
