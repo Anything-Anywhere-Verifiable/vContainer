@@ -1,13 +1,17 @@
 """A pull request review agent: reads one GitHub PR at one commit and reviews it.
 
 The model gets five tools and nothing else: no shell, no network, no keys.
-The OpenRouter key is sealed to the verified VM and read from
-/run/secrets/OPENROUTER_API_KEY. The review is printed to stdout.
+The keys are sealed to the verified VM and read from /run/secrets:
+OPENROUTER_API_KEY, and optionally GITHUB_TOKEN. Without a token the review
+is printed to stdout. With one, the agent can read a private repository and
+posts the review to the pull request as a comment review; the output then
+shows nothing of the repository: tool names, the review's URL, and errors
+without details.
 
 Environment: PR_URL (https://github.com/OWNER/REPO/pull/N), HEAD_SHA (the
 40-hex commit to review), MODEL (optional, an OpenRouter model id).
 Exit codes: 0 reviewed, 2 bad or unsupported input, 3 the PR head is not
-HEAD_SHA, 4 GitHub or model error.
+HEAD_SHA (or moved before posting), 4 GitHub or model error.
 """
 import base64
 import json
@@ -25,6 +29,10 @@ OPENROUTER = "https://openrouter.ai/api/v1/chat/completions"
 MAX_STEPS = 30        # model turns; the last one asks for the review
 MAX_RESULT = 60_000   # characters per tool result
 MAX_LINES = 800       # lines per read_file or get_diff call
+MAX_COMMENTS = 10
+MAX_BODY = 4000       # characters per comment; the summary may have twice as many
+
+PRIVATE = False       # set with GITHUB_TOKEN: print nothing of the repository
 
 SYSTEM = """You review one GitHub pull request at one commit.
 
@@ -83,12 +91,17 @@ TOOLS = [
 ]
 
 
-class Fail(Exception):
-    """Ends the run with an exit code."""
+TOOL_NAMES = [t["function"]["name"] for t in TOOLS]
 
-    def __init__(self, code, message):
+
+class Fail(Exception):
+    """Ends the run with an exit code. `safe` is printed instead of the message
+    when the output must show nothing of the repository."""
+
+    def __init__(self, code, message, safe=None):
         super().__init__(message)
         self.code = code
+        self.safe = safe or message
 
 
 class ToolError(Exception):
@@ -108,7 +121,7 @@ def http(method, url, headers, body=None, timeout=60):
         except urllib.error.HTTPError as e:
             return e.code, e.read(), e.headers
     except (urllib.error.URLError, OSError, HTTPException) as e:
-        raise Fail(4, f"{method} {url}: {e!r}")
+        raise Fail(4, f"{method} {url}: {e!r}", f"{method} {urllib.parse.urlsplit(url).hostname}: {type(e).__name__}")
 
 
 def lines_of(text):
@@ -141,9 +154,9 @@ def integer(value, name, minimum):
 
 
 class GitHub:
-    """Read-only access to one repository at one commit."""
+    """One repository at one commit: reads, and the posting of a review."""
 
-    def __init__(self, owner, repo, sha):
+    def __init__(self, owner, repo, sha, token=None):
         self.repo = f"/repos/{owner}/{repo}"
         self.sha = sha
         self.cache = {}
@@ -152,6 +165,8 @@ class GitHub:
             "User-Agent": "vcontainer-pr-review-agent",
             "X-GitHub-Api-Version": "2022-11-28",
         }
+        if token:
+            self.headers["Authorization"] = f"Bearer {token}"
 
     def get(self, path):
         status, body, headers = http("GET", GITHUB + self.repo + path, self.headers, timeout=30)
@@ -159,12 +174,21 @@ class GitHub:
             try:
                 return json.loads(body)
             except ValueError:
-                raise Fail(4, f"GitHub {path}: the response is not JSON")
+                raise Fail(4, f"GitHub {path}: the response is not JSON", "GitHub: a response is not JSON")
         if status == 404:
             raise ToolError("not found")
         if status in (403, 429) and headers.get("x-ratelimit-remaining") == "0":
             raise Fail(4, "GitHub rate limit reached (60 requests per hour without a token)")
-        raise Fail(4, f"GitHub {path}: HTTP {status}: {body[:300].decode(errors='replace')}")
+        raise Fail(4, f"GitHub {path}: HTTP {status}: {body[:300].decode(errors='replace')}", f"GitHub: HTTP {status}")
+
+    def post(self, path, payload):
+        headers = dict(self.headers, **{"Content-Type": "application/json"})
+        status, body, _ = http("POST", GITHUB + self.repo + path, headers, json.dumps(payload).encode())
+        try:
+            data = json.loads(body)
+        except ValueError:
+            data = None
+        return status, data if isinstance(data, dict) else {}
 
     def contents(self, path):
         if path not in self.cache:
@@ -188,19 +212,32 @@ def clean_path(path, allow_root=False):
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
-def number_patch(patch):
-    """Prefixes each line of a unified diff that exists in the new file with its line number."""
-    out, line = [], 0
+def diff_lines(patch):
+    """Yields each line of a unified diff with its line number in the new
+    file, or None for hunk headers and removed lines."""
+    line = 0
     for text in lines_of(patch):
         m = HUNK.match(text)
         if m:
             line = int(m.group(1))
-            out.append(text)
+            yield None, text
         elif text.startswith(("-", "\\")):
-            out.append(f"{'':6}{text}")
+            yield None, text
         else:
-            out.append(f"{line:5} {text}")
+            yield line, text
             line += 1
+
+
+def number_patch(patch):
+    """Prefixes each line of a unified diff that exists in the new file with its line number."""
+    out = []
+    for line, text in diff_lines(patch):
+        if line is not None:
+            out.append(f"{line:5} {text}")
+        elif HUNK.match(text):
+            out.append(text)
+        else:
+            out.append(f"{'':6}{text}")
     return out
 
 
@@ -215,6 +252,12 @@ class Review:
             moved = f" (from {f['previous_filename']})" if f.get("previous_filename") else ""
             rows.append(f"{f['status']:<9} {f['filename']}{moved} +{f['additions']} -{f['deletions']}")
         return "\n".join(rows) or "no changed files"
+
+    def commentable(self, path, line):
+        """Whether the diff shows this line of the new file, so that GitHub
+        accepts an inline comment on it."""
+        f = self.files.get(path)
+        return bool(f and f.get("patch")) and any(n == line for n, _ in diff_lines(f["patch"]))
 
     def get_diff(self, path, offset=0):
         path, offset = clean_path(path), integer(offset, "offset", 0)
@@ -272,14 +315,25 @@ class Review:
         return result
 
 
+def shorten(text, limit):
+    text = text.strip()
+    return text if len(text) <= limit else text[:limit] + " [shortened]"
+
+
 def check_review(args):
     summary, comments = args.get("summary"), args.get("comments")
     if not isinstance(summary, str) or not isinstance(comments, list):
         raise ToolError("submit_review needs a summary string and a comments list")
     for c in comments:
-        if not (isinstance(c, dict) and isinstance(c.get("path"), str) and isinstance(c.get("body"), str)):
+        if not (isinstance(c, dict) and isinstance(c.get("path"), str) and 0 < len(c["path"]) <= 1000
+                and isinstance(c.get("body"), str)):
             raise ToolError("each comment needs path (string), line (integer) and body (string)")
         integer(c.get("line"), "line", 1)
+    # Bounded, so that a posted review stays within GitHub's size limit.
+    summary = shorten(summary, 2 * MAX_BODY)
+    if len(comments) > MAX_COMMENTS:
+        summary += f"\n\n[{len(comments) - MAX_COMMENTS} more comments were left out]"
+    comments = [{"path": c["path"], "line": c["line"], "body": shorten(c["body"], MAX_BODY)} for c in comments[:MAX_COMMENTS]]
     return summary, comments
 
 
@@ -315,11 +369,11 @@ class Model:
                 self.tokens[1] += usage.get("completion_tokens", 0)
                 return reply["choices"][0]["message"]
             if status not in (200, 408, 429, 500, 502, 503, 504) or last:
-                raise Fail(4, f"OpenRouter: HTTP {status}: {raw[:300].decode(errors='replace')}")
+                raise Fail(4, f"OpenRouter: HTTP {status}: {raw[:300].decode(errors='replace')}", f"OpenRouter: HTTP {status}")
             time.sleep(retry_after(headers) or 2 ** attempt * 2)
 
 
-def run(gh, model, pr):
+def run(gh, model, pr, show_args):
     files = gh.get(f"/compare/{pr['base']['sha']}...{gh.sha}").get("files", [])
     if len(files) >= 300 and pr["changed_files"] > len(files):
         raise Fail(2, f"the pull request changes {pr['changed_files']} files; GitHub lists only {len(files)}")
@@ -352,8 +406,10 @@ def run(gh, model, pr):
                 if not isinstance(args, dict):
                     raise ToolError("arguments must be a JSON object")
                 if name == "submit_review":
-                    return check_review(args)
-                log(f"  tool {name} {json.dumps(args)}")
+                    return (review, *check_review(args))
+                # The name comes from the model: print it only if it is ours.
+                shown = name if name in TOOL_NAMES else "(unknown)"
+                log(f"  tool {shown} {json.dumps(args)}" if show_args else f"  tool {shown}")
                 result = review.call(name, args)
             except json.JSONDecodeError:
                 result = "error: arguments are not valid JSON"
@@ -363,36 +419,100 @@ def run(gh, model, pr):
     raise Fail(4, f"no review after {MAX_STEPS} model turns")
 
 
+def review_body(summary, outside, model, sha):
+    parts = [f"Automated review of {sha[:12]} by the vContainer pull request review agent, model `{model}`.",
+             summary.strip()]
+    if outside:
+        parts.append("Comments on lines that the diff does not show:")
+        parts += [f"`{c['path']}:{c['line']}`\n{c['body'].strip()}" for c in outside]
+    return "\n\n".join(parts)
+
+
+def inert(text):
+    """Keeps GitHub from loading anything when it shows the review. The text
+    comes from the model, which reads the pull request; an image URL in it
+    would send what it holds to another server."""
+    text = text.replace("![", "!\\[")
+    return re.sub(r"<(?=\s*/?\s*(?:img|picture|source|video|audio|iframe|object|embed|svg|image)\b)", "&lt;", text, flags=re.I)
+
+
+def post_review(gh, number, review, summary, comments, model):
+    """Posts a comment review on HEAD_SHA and returns its URL and the number
+    of inline comments. GitHub takes inline comments only on lines the diff
+    shows; the others go into the review's body."""
+    inline = [c for c in comments if review.commentable(c["path"], c["line"])]
+    for attempt in (inline, []):
+        outside = [c for c in comments if c not in attempt]
+        try:
+            status, data = gh.post(f"/pulls/{number}/reviews", {
+                "commit_id": gh.sha,
+                "event": "COMMENT",
+                "body": inert(review_body(summary, outside, model, gh.sha)),
+                "comments": [{"path": c["path"], "line": c["line"], "side": "RIGHT", "body": inert(c["body"])} for c in attempt],
+            })
+        except Fail as e:
+            after = "; GitHub may have taken the review, so check the pull request before running the agent again"
+            raise Fail(4, f"{e}{after}", f"{e.safe}{after}")
+        if status == 200:
+            return data.get("html_url", ""), len(attempt)
+        # 422: GitHub rejected an inline comment; try again with all of them in the body.
+        if status != 422 or not attempt:
+            break
+    hint = " (GITHUB_TOKEN needs Pull requests: Read and write on this repository)"
+    raise Fail(4, f"GitHub did not accept the review: HTTP {status}: {str(data.get('message', ''))[:200]}{hint}",
+               f"GitHub did not accept the review: HTTP {status}{hint}")
+
+
+def secret(name, required):
+    try:
+        value = open(f"/run/secrets/{name}").read().strip()
+    except FileNotFoundError:
+        if required:
+            raise Fail(2, f"no secret {name} (deploy with --secret {name}=@FILE)")
+        return None
+    except (OSError, UnicodeDecodeError):
+        raise Fail(2, f"secret {name} is not a readable file")
+    # Never let a malformed secret reach an HTTP header: the error would print it.
+    if not re.fullmatch(r"[\x21-\x7e]+", value):
+        raise Fail(2, f"secret {name} must be one line of printable ASCII")
+    return value
+
+
 def main():
     m = re.fullmatch(r"https://github\.com/([A-Za-z0-9-]+)/([A-Za-z0-9_.-]+)/pull/([0-9]+)/?", os.environ.get("PR_URL", ""))
     sha = os.environ.get("HEAD_SHA", "").lower()
     if not m or m.group(2) in (".", "..") or not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise Fail(2, "set PR_URL=https://github.com/OWNER/REPO/pull/N and HEAD_SHA to the 40-hex commit to review")
-    try:
-        key = open("/run/secrets/OPENROUTER_API_KEY").read().strip()
-    except (OSError, UnicodeDecodeError):
-        raise Fail(2, "no readable secret OPENROUTER_API_KEY (deploy with --secret OPENROUTER_API_KEY=@FILE)")
-    # Never let a malformed key reach an HTTP header: the error would print it.
-    if not re.fullmatch(r"[\x21-\x7e]+", key):
-        raise Fail(2, "secret OPENROUTER_API_KEY must be one line of printable ASCII")
+    global PRIVATE
+    key = secret("OPENROUTER_API_KEY", required=True)
+    token = secret("GITHUB_TOKEN", required=False)
+    PRIVATE = token is not None
     owner, repo, number = m.groups()
     model = Model(key, os.environ.get("MODEL", "anthropic/claude-sonnet-5.5"))
-    gh = GitHub(owner, repo, sha)
+    gh = GitHub(owner, repo, sha, token)
     log(f"pr-review-agent: {owner}/{repo}#{number} at {sha[:12]}, model {model.model}")
     try:
         pr = gh.get(f"/pulls/{number}")
     except ToolError:
-        raise Fail(2, f"{owner}/{repo}#{number} not found (is the repository public?)")
+        raise Fail(2, f"{owner}/{repo}#{number} not found (is the repository public, or does GITHUB_TOKEN cover it?)")
     if pr["head"]["sha"] != sha:
-        raise Fail(3, f"the pull request head is {pr['head']['sha']}, not HEAD_SHA {sha}; refusing to review another commit")
+        raise Fail(3, f"the pull request head is {pr['head']['sha']}, not HEAD_SHA {sha}; refusing to review another commit",
+                   "the pull request head is not HEAD_SHA; refusing to review another commit")
     try:
-        summary, comments = run(gh, model, pr)
+        review, summary, comments = run(gh, model, pr, show_args=token is None)
+        if token:
+            # Post only if the pull request still points at the reviewed commit.
+            if gh.get(f"/pulls/{number}")["head"]["sha"] != sha:
+                raise Fail(3, "the pull request moved to another commit during the review; not posting")
+            url, inline = post_review(gh, number, review, summary, comments, model.model)
+            log(f"\nposted a review of {sha[:12]} with {len(comments)} comments, {inline} inline: {url}")
     except ToolError as e:
-        raise Fail(4, f"GitHub: {e}")
-    log(f"\nreview of {owner}/{repo}#{number} at {sha[:12]}: {len(comments)} comments\n\n{summary.strip()}")
-    for c in comments:
-        body = "\n".join("  " + line for line in c["body"].strip().splitlines())
-        log(f"\n{c['path']}:{c['line']}\n{body}")
+        raise Fail(4, f"GitHub: {e}", "GitHub: a request failed")
+    if not token:
+        log(f"\nreview of {owner}/{repo}#{number} at {sha[:12]}: {len(comments)} comments\n\n{summary.strip()}")
+        for c in comments:
+            body = "\n".join("  " + line for line in c["body"].strip().splitlines())
+            log(f"\n{c['path']}:{c['line']}\n{body}")
     log(f"\ntokens: {model.tokens[0]} prompt, {model.tokens[1]} completion")
     return 0
 
@@ -401,5 +521,11 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except Fail as e:
-        print(f"pr-review-agent: {e}", file=sys.stderr, flush=True)
+        print(f"pr-review-agent: {e.safe if PRIVATE else e}", file=sys.stderr, flush=True)
         sys.exit(e.code)
+    except Exception:
+        if not PRIVATE:
+            raise
+        # A traceback could show data from the repository.
+        print("pr-review-agent: crashed", file=sys.stderr, flush=True)
+        sys.exit(1)
