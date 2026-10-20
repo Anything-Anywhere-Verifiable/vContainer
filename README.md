@@ -222,7 +222,7 @@ Your owner key and session files live in `~/.config/vcontainer`. The key is crea
 
 Build and publish the boot image on a Linux machine, as above. On the Mac, install the C compiler, Rust and `gcloud` from step 1, do step 2, then clone the code and install the CLI from step 3. Last, copy `~/.config/vcontainer/release.json` from the Linux machine to the same path on the Mac.
 
-To build your own container images on a Mac, as in the [last example](#your-own-agent-image-with-an-api-key), you also need Docker Desktop.
+To build your own container images on a Mac, as in [Your own agent image](#your-own-agent-image-with-an-api-key), you also need Docker Desktop.
 
 ## More examples
 
@@ -347,6 +347,69 @@ Remove the session when you are done:
 vcontainer rm --session agent
 ```
 
+### An agent with tools: review a pull request
+
+The [pull request review agent](examples/pr-review-agent) works through tools. It reviews one GitHub pull request at one commit: the model reads the diff and other text files of the repository, including unchanged ones, through five tools, with no shell, and finishes with a review. Its image is on Docker Hub, so nothing needs to be built. Here it reviews [pull request #1](https://github.com/haoxxu/vContainer-review-demo/pull/1) of a small demo repository, which adds a function with three deliberate bugs.
+
+Save your OpenRouter API key in a file named `openrouter.key` that holds only the key. Then start a session:
+
+```sh
+vcontainer run --session review
+```
+
+Deploy the agent, pinned by digest. The pull request and its commit are environment variables, so they are part of the measured launch; if the pull request has moved to another commit, the agent stops without reviewing it. The agent opens no port:
+
+```sh
+vcontainer deploy --session review docker.io/terryxhx/pr-review-agent@sha256:8e6a0d8000d78a3bd64cc853b37b415914f3339da4bae598289a25acd71b7df0 -e PR_URL=https://github.com/haoxxu/vContainer-review-demo/pull/1 -e HEAD_SHA=0df3f283c37770bc63642d94f77556000835b3e3 --secret OPENROUTER_API_KEY=@openrouter.key
+```
+
+The deploy returns once the container runs, after about 15 seconds. The review takes a minute or two; then verify the session again:
+
+```sh
+vcontainer verify --session review
+```
+
+```console
+review: VERIFIED
+  ...
+  ✓ launch measured before pull: docker.io/terryxhx/pr-review-agent@sha256:8e6a0d80…
+  ✓ container sealed: manifest sha256:8e6a0d80…
+  state: Exited (exit code 0)
+  container: docker.io/terryxhx/pr-review-agent@sha256:8e6a0d80… env=["PR_URL=https://github.com/haoxxu/vContainer-review-demo/pull/1", "HEAD_SHA=0df3f283c37770bc63642d94f77556000835b3e3"] secrets={"OPENROUTER_API_KEY"}
+```
+
+The evidence names the agent's image, the pull request and the commit, and the exit code is part of the quote. Read the review from the serial console; `sed` skips the boot messages before it:
+
+```sh
+vcontainer logs --session review | sed -n '/^pr-review-agent:/,$p'
+```
+
+```console
+pr-review-agent: haoxxu/vContainer-review-demo#1 at 0df3f283c377, model anthropic/claude-sonnet-5.5
+  tool get_diff {"path": "notes/listing.py"}
+  tool list_dir {"path": "notes"}
+  tool read_file {"path": "notes/cache.py"}
+  tool read_file {"path": "notes/db.py"}
+
+review of haoxxu/vContainer-review-demo#1 at 0df3f283c377: 4 comments
+
+Four defects in notes/listing.py: the cache is never usable, pages are off by one, there is an SQL injection, and the cache ignores the connection.
+
+notes/listing.py:16
+  `Cache.get` raises KeyError on a miss or an expired entry. It never returns None. The first call for any key therefore raises KeyError and `list_notes` fails. Wrap the call in try/except KeyError and fall through to the query. As written the cache can't work.
+...
+tokens: 6387 prompt, 853 completion
+vcontainer: container exited with 0
+```
+
+In this run the agent found the three planted bugs and one more real problem. It found the cache bug by reading `notes/cache.py`, a file the pull request does not change. The review varies from run to run.
+
+The OpenRouter key is sealed to the VM, and the model never sees it: the agent calls OpenRouter itself and gives the model only its tools. Everything else here is public: the repository, the launch and the review on the serial console. OpenRouter and the model's provider see the code under review. Remove the session when you are done:
+
+```sh
+vcontainer rm --session review
+```
+
 ## Command reference
 
 **`vcontainer run --session NAME`** creates a VM, or reconnects to an existing one, and verifies it. Options:
@@ -394,7 +457,7 @@ Only secret values and the registry token are encrypted, and the container itsel
 
 - the launch configuration (image, command, environment variables and secret names), which anyone can read from the ledger;
 - container output, which goes to the host-readable serial console unless you pass `--quiet`;
-- traffic to the container's ports, which vContainer does not encrypt. The agents in the examples serve plain HTTP. To protect this traffic, have the container serve TLS with a key passed through `--secret`, and publish the key's fingerprint with `-e` so clients can check it against the verified evidence.
+- traffic to the container's ports, which vContainer does not encrypt. The chat agents in the examples serve plain HTTP. To protect this traffic, have the container serve TLS with a key passed through `--secret`, and publish the key's fingerprint with `-e` so clients can check it against the verified evidence.
 
 ## Status
 
