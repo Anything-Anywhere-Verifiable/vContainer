@@ -354,34 +354,34 @@ The [pull request review agent](examples/pr-review-agent) works through tools. I
 Save your OpenRouter API key in a file named `openrouter.key` that holds only the key. Then start a session:
 
 ```sh
-vcontainer run --session review
+vcontainer run --session public-review
 ```
 
 Deploy the agent, pinned by digest. The pull request and its commit are environment variables, so they are part of the measured launch; if the pull request has moved to another commit, the agent stops without reviewing it. The agent opens no port:
 
 ```sh
-vcontainer deploy --session review docker.io/terryxhx/pr-review-agent@sha256:8e6a0d8000d78a3bd64cc853b37b415914f3339da4bae598289a25acd71b7df0 -e PR_URL=https://github.com/haoxxu/vContainer-review-demo/pull/1 -e HEAD_SHA=0df3f283c37770bc63642d94f77556000835b3e3 --secret OPENROUTER_API_KEY=@openrouter.key
+vcontainer deploy --session public-review docker.io/terryxhx/pr-review-agent@sha256:fc20c8d1369edacbd77405847d94efdca733df17b883a908d0db29e28865776b -e PR_URL=https://github.com/haoxxu/vContainer-review-demo/pull/1 -e HEAD_SHA=0df3f283c37770bc63642d94f77556000835b3e3 --secret OPENROUTER_API_KEY=@openrouter.key
 ```
 
 The deploy returns once the container runs, after about 15 seconds. The review takes a minute or two; then verify the session again:
 
 ```sh
-vcontainer verify --session review
+vcontainer verify --session public-review
 ```
 
 ```console
-review: VERIFIED
+public-review: VERIFIED
   ...
-  ✓ launch measured before pull: docker.io/terryxhx/pr-review-agent@sha256:8e6a0d80…
-  ✓ container sealed: manifest sha256:8e6a0d80…
+  ✓ launch measured before pull: docker.io/terryxhx/pr-review-agent@sha256:fc20c8d1…
+  ✓ container sealed: manifest sha256:fc20c8d1…
   state: Exited (exit code 0)
-  container: docker.io/terryxhx/pr-review-agent@sha256:8e6a0d80… env=["PR_URL=https://github.com/haoxxu/vContainer-review-demo/pull/1", "HEAD_SHA=0df3f283c37770bc63642d94f77556000835b3e3"] secrets={"OPENROUTER_API_KEY"}
+  container: docker.io/terryxhx/pr-review-agent@sha256:fc20c8d1… env=["PR_URL=https://github.com/haoxxu/vContainer-review-demo/pull/1", "HEAD_SHA=0df3f283c37770bc63642d94f77556000835b3e3"] secrets={"OPENROUTER_API_KEY"}
 ```
 
 The evidence names the agent's image, the pull request and the commit, and the exit code is part of the quote. Read the review from the serial console; `sed` skips the boot messages before it:
 
 ```sh
-vcontainer logs --session review | sed -n '/^pr-review-agent:/,$p'
+vcontainer logs --session public-review | sed -n '/^pr-review-agent:/,$p'
 ```
 
 ```console
@@ -393,12 +393,12 @@ pr-review-agent: haoxxu/vContainer-review-demo#1 at 0df3f283c377, model anthropi
 
 review of haoxxu/vContainer-review-demo#1 at 0df3f283c377: 4 comments
 
-Four defects in notes/listing.py: the cache is never usable, pages are off by one, there is an SQL injection, and the cache ignores the connection.
+Four defects in notes/listing.py: the cache is used incorrectly, the pagination is off by one page, the query is open to SQL injection, and the cache key ignores the connection.
 
 notes/listing.py:16
-  `Cache.get` raises KeyError on a miss or an expired entry. It never returns None. The first call for any key therefore raises KeyError and `list_notes` fails. Wrap the call in try/except KeyError and fall through to the query. As written the cache can't work.
+  `Cache.get` raises KeyError on a miss or expiry. It never returns None, as its docstring in cache.py says. The first call for any key therefore raises KeyError and `list_notes` never works. Wrap the call in try/except KeyError and fall through to the query. Also, an empty list is a valid cached value, so don't test the result for None.
 ...
-tokens: 6387 prompt, 853 completion
+tokens: 6387 prompt, 898 completion
 vcontainer: container exited with 0
 ```
 
@@ -407,7 +407,98 @@ In this run the agent found the three planted bugs and one more real problem. It
 The OpenRouter key is sealed to the VM, and the model never sees it: the agent calls OpenRouter itself and gives the model only its tools. Everything else here is public: the repository, the launch and the review on the serial console. OpenRouter and the model's provider see the code under review. Remove the session when you are done:
 
 ```sh
-vcontainer rm --session review
+vcontainer rm --session public-review
+```
+
+### Review a private pull request
+
+The same agent can review a pull request in a private repository and post the review there, while the host sees neither the code the agent reads, the token nor the review. You copy the demo repository into a private one, give the agent a GitHub token for that repository only, and keep the container's output off the serial console. The demo's code is public anyway; with your own private repository, the same steps keep its code from the host.
+
+This example also uses the [GitHub CLI](https://cli.github.com), `gh`, signed in with `gh auth login` to the account that will own the copy.
+
+Copy the demo repository, with its history, into a new private repository named `review-demo`. "Use this template" does not work here: the branches of a template copy have unrelated histories, so GitHub cannot open a pull request between them. Create the empty repository:
+
+```sh
+gh repo create review-demo --private
+```
+
+Let `git` push to GitHub over HTTPS with your `gh` login (once per machine). If you push over SSH instead, skip this and push to `git@github.com:OWNER/review-demo.git` below:
+
+```sh
+gh auth setup-git
+```
+
+Clone the demo repository without a working tree:
+
+```sh
+git clone --bare https://github.com/haoxxu/vContainer-review-demo.git
+```
+
+Push every branch to your copy. Replace `OWNER` with your GitHub account, here and below:
+
+```sh
+git -C vContainer-review-demo.git push --mirror https://github.com/OWNER/review-demo.git
+```
+
+Open the pull request in your copy:
+
+```sh
+gh pr create --repo OWNER/review-demo --base main --head feat/list-notes --title "feat: add paginated note listing" --body "Adds list_notes, which lists the notes of one owner, a page at a time."
+```
+
+Create a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) for this repository only. Under **Repository access**, choose **Only select repositories** and `review-demo`. Under **Permissions**, give **Contents** read-only and **Pull requests** read and write. Save the token in a file named `github.key` that holds only the token. Then start a session:
+
+```sh
+vcontainer run --session private-review
+```
+
+Deploy the same image as in the previous example. The copy keeps the demo's commits, so `HEAD_SHA` does not change. With `GITHUB_TOKEN`, the agent posts its review to the pull request and prints nothing of the repository, and `--quiet` keeps even that off the serial console:
+
+```sh
+vcontainer deploy --session private-review docker.io/terryxhx/pr-review-agent@sha256:fc20c8d1369edacbd77405847d94efdca733df17b883a908d0db29e28865776b -e PR_URL=https://github.com/OWNER/review-demo/pull/1 -e HEAD_SHA=0df3f283c37770bc63642d94f77556000835b3e3 --secret OPENROUTER_API_KEY=@openrouter.key --secret GITHUB_TOKEN=@github.key --quiet
+```
+
+After a minute or two, verify the session:
+
+```sh
+vcontainer verify --session private-review
+```
+
+```console
+private-review: VERIFIED
+  ...
+  state: Exited (exit code 0)
+  container: docker.io/terryxhx/pr-review-agent@sha256:fc20c8d1… env=["PR_URL=https://github.com/OWNER/review-demo/pull/1", "HEAD_SHA=0df3f283c37770bc63642d94f77556000835b3e3"] secrets={"GITHUB_TOKEN", "OPENROUTER_API_KEY"}
+```
+
+Both secret names are part of the evidence, so whoever checks the session can see that the agent had a GitHub token. The serial console shows the container start and exit, and nothing in between:
+
+```sh
+vcontainer logs --session private-review | tail -n 2
+```
+
+```console
+vcontainer: container started: python3 -u /app/agent.py
+vcontainer: container exited with 0
+```
+
+Open the pull request to read the review. It is a comment review of commit `0df3f283`, posted by the account that owns the token, with inline comments on the lines it discusses:
+
+```sh
+gh pr view 1 --repo OWNER/review-demo --web
+```
+
+What this run keeps from whom:
+
+- The host cannot read the code the agent reads, the token or the review. The token is sealed to the VM, the agent keeps the code in the VM's encrypted memory, its traffic to GitHub and OpenRouter is HTTPS, the container's output stays off the serial console, and the VM has no SSH or exec.
+- The launch is public: the image, the commit and `PR_URL`, which names your repository.
+- GitHub, OpenRouter and the model's provider see the code. So does anything your GitHub settings let read the repository, such as an app or automatic Copilot code review; vContainer does not change those settings. The host sees which servers the VM connects to and how much data it exchanges with them.
+- The image is the one we publish, pinned by digest. `vcontainer verify` shows which image ran, but not that it was built from [examples/pr-review-agent](examples/pr-review-agent), so you trust its publisher. To run your own build, build that directory, push it to your registry as in [Your own agent image](#your-own-agent-image-with-an-api-key), and deploy that reference instead.
+
+Remove the session when you are done. The token and the private repository stay until you delete them on GitHub:
+
+```sh
+vcontainer rm --session private-review
 ```
 
 ## Command reference
