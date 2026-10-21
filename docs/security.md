@@ -17,6 +17,12 @@ Only secret values and the registry token are encrypted, and the container itsel
 - container output, which goes to the host-readable serial console unless you pass `--quiet`;
 - traffic to the container's ports, which vContainer does not encrypt. To protect this traffic, have the container serve TLS with a key passed through `--secret`, and publish the key's fingerprint with `-e` so clients can check it against the verified evidence.
 
+### Updating the trusted code
+
+Security updates to `/init` or its dependencies require rebuilding and publishing the boot image as well as updating the CLI. From a clean checkout of the updated code, run `python3 scripts/install.py --publish --project PROJECT`. New sessions use that published release and its new expected measurements. Existing VMs keep their old code until they are replaced; export a new policy after redeploying. Recorded evidence for an earlier release does not establish that the updated release was tested on hardware.
+
+The October 2026 TLS dependency update removes the affected emSign trust path using `webpki-roots` and `webpki-root-certs` 1.0.10 and `rustls-webpki` 0.103.16. See the [root-store advisory](https://rustsec.org/advisories/RUSTSEC-2026-0381.html) and [certificate-verifier advisory](https://rustsec.org/advisories/RUSTSEC-2026-0382.html). An OS trust-store update alone does not replace the roots embedded in `/init`.
+
 ### Status
 
 Version 0.1 works end to end on real hardware. The release built from commit c2f795b was rebuilt from scratch, also in a fresh clone, and matched byte for byte.

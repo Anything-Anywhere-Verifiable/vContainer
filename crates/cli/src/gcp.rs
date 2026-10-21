@@ -1,6 +1,6 @@
 //! Google Cloud operations, done by running `gcloud` (no API client needed).
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use serde::Deserialize;
 use std::process::Command;
 
@@ -72,6 +72,44 @@ pub fn instance(project: &str, name: &str, zone: &str) -> Result<Option<Instance
     Ok(describe(&["compute", "instances", "describe", name, "--zone", zone, "--format=json", &p])?.map(|j| serde_json::from_str(&j)).transpose()?)
 }
 
+/// A name can be reused after deletion. Only the immutable ID in our saved
+/// session authorizes changing an existing instance.
+pub fn check_instance(inst: &Instance, name: &str, expected_id: Option<u64>) -> Result<()> {
+    let expected = expected_id.with_context(|| format!("instance {name} already exists but is not registered as this session; choose a different session name"))?;
+    ensure!(inst.id.parse::<u64>()? == expected,
+        "instance {name} has ID {}, but this session owns ID {expected}; refusing to change or delete the replacement", inst.id);
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct Firewall {
+    #[serde(default)]
+    description: String,
+    network: String,
+    #[serde(rename = "targetTags", default)]
+    target_tags: Vec<String>,
+}
+
+fn firewall_owner(session: &str, instance_id: u64) -> String {
+    format!("vcontainer session {session}; instance {instance_id}")
+}
+
+/// Old releases did not write a marker. Migrate only their exact network/tag
+/// scope and only while the saved instance ID has been checked by the caller.
+fn check_firewall(rule: &Firewall, session: &str, instance_id: u64, allow_legacy: bool) -> Result<()> {
+    let scoped = rule.network.ends_with(&format!("/networks/{NETWORK}"))
+        && rule.target_tags == [format!("vcontainer-{session}")];
+    let owned = rule.description == firewall_owner(session, instance_id)
+        || (allow_legacy && rule.description.is_empty());
+    ensure!(scoped && owned, "firewall vcontainer-{session} is not owned by session instance {instance_id}; refusing to change or delete it");
+    Ok(())
+}
+
+fn firewall(project: &str, session: &str) -> Result<Option<Firewall>> {
+    describe(&["compute", "firewall-rules", "describe", &format!("vcontainer-{session}"), "--format=json", &format!("--project={project}")])?
+        .map(|j| serde_json::from_str(&j).context("parse firewall rule")).transpose()
+}
+
 pub fn ensure_network(project: &str) -> Result<()> {
     let p = format!("--project={project}");
     if describe(&["compute", "networks", "describe", NETWORK, "--format=value(name)", &p])?.is_none() {
@@ -82,13 +120,15 @@ pub fn ensure_network(project: &str) -> Result<()> {
 
 /// One firewall rule per session: the API port plus the container's ports,
 /// open only to `source`.
-pub fn ensure_firewall(project: &str, session: &str, ports: &[u16], source: &str) -> Result<()> {
+pub fn ensure_firewall(project: &str, session: &str, ports: &[u16], source: &str, instance_id: u64, allow_legacy: bool) -> Result<()> {
     let p = format!("--project={project}");
     let rule = format!("vcontainer-{session}");
     let allow: Vec<String> = std::iter::once(vcontainer_core::PORT).chain(ports.iter().copied()).map(|p| format!("tcp:{p}")).collect();
     let allow = allow.join(",");
-    if describe(&["compute", "firewall-rules", "describe", &rule, "--format=value(name)", &p])?.is_some() {
-        gcloud(&["compute", "firewall-rules", "update", &rule, &format!("--allow={allow}"), &format!("--source-ranges={source}"), &p])?;
+    let owner = format!("--description={}", firewall_owner(session, instance_id));
+    if let Some(existing) = firewall(project, session)? {
+        check_firewall(&existing, session, instance_id, allow_legacy)?;
+        gcloud(&["compute", "firewall-rules", "update", &rule, &format!("--allow={allow}"), &format!("--source-ranges={source}"), &owner, &p])?;
     } else {
         gcloud(&[
             "compute", "firewall-rules", "create", &rule, &p,
@@ -96,13 +136,14 @@ pub fn ensure_firewall(project: &str, session: &str, ports: &[u16], source: &str
             &format!("--allow={allow}"),
             &format!("--source-ranges={source}"),
             &format!("--target-tags={rule}"),
+            &owner,
         ])?;
     }
     Ok(())
 }
 
-pub fn create_instance(project: &str, name: &str, zone: &str, machine_type: &str, image: &str, image_project: &str, owner: &str) -> Result<()> {
-    gcloud(&[
+pub fn create_instance(project: &str, name: &str, zone: &str, machine_type: &str, image: &str, image_project: &str, owner: &str) -> Result<Instance> {
+    let raw = gcloud(&[
         "compute", "instances", "create", name,
         &format!("--project={project}"),
         &format!("--zone={zone}"),
@@ -121,22 +162,48 @@ pub fn create_instance(project: &str, name: &str, zone: &str, machine_type: &str
         &format!("--tags=vcontainer-{name}"),
         "--labels=vcontainer=session",
         &format!("--metadata={}={owner}", vcontainer_core::OWNER_METADATA_KEY),
+        "--format=json",
     ])?;
-    Ok(())
+    let mut created: Vec<Instance> = serde_json::from_str(&raw).context("parse created instance")?;
+    ensure!(created.len() == 1, "create did not return exactly one instance");
+    Ok(created.remove(0))
 }
 
 pub fn start(project: &str, name: &str, zone: &str) -> Result<()> {
     gcloud(&["compute", "instances", "start", name, &format!("--zone={zone}"), &format!("--project={project}")]).map(|_| ())
 }
 
-pub fn delete(project: &str, name: &str, zone: &str) -> Result<()> {
+pub fn delete(project: &str, name: &str, zone: &str, instance_id: u64) -> Result<()> {
     let p = format!("--project={project}");
-    if instance(project, name, zone)?.is_some() {
-        gcloud(&["compute", "instances", "delete", name, &format!("--zone={zone}"), "--quiet", &p])?;
+    let inst = instance(project, name, zone)?;
+    if let Some(inst) = &inst {
+        check_instance(inst, name, Some(instance_id))?;
     }
     let rule = format!("vcontainer-{name}");
-    if describe(&["compute", "firewall-rules", "describe", &rule, "--format=value(name)", &p])?.is_some() {
+    let existing = firewall(project, name)?;
+    if let Some(existing) = &existing {
+        check_firewall(&existing, name, instance_id, inst.is_some())?;
+        // Persist the legacy ownership proof while the matching VM still
+        // exists, so a failed firewall delete can safely be retried later.
+        if existing.description.is_empty() {
+            gcloud(&["compute", "firewall-rules", "update", &rule, &format!("--description={}", firewall_owner(name, instance_id)), &p])?;
+        }
+    }
+    if inst.is_some() {
+        delete_instance(project, name, zone, instance_id)?;
+    }
+    if existing.is_some() {
         gcloud(&["compute", "firewall-rules", "delete", &rule, "--quiet", &p])?;
+    }
+    Ok(())
+}
+
+/// Also used to roll back a successful create before a session record exists.
+/// No firewall is owned yet at that point, so do not touch any same-name rule.
+pub fn delete_instance(project: &str, name: &str, zone: &str, instance_id: u64) -> Result<()> {
+    if let Some(inst) = instance(project, name, zone)? {
+        check_instance(&inst, name, Some(instance_id))?;
+        gcloud(&["compute", "instances", "delete", name, &format!("--zone={zone}"), "--quiet", &format!("--project={project}")])?;
     }
     Ok(())
 }
@@ -150,4 +217,32 @@ pub fn my_ip() -> Result<String> {
     let ip = String::from_utf8_lossy(&crate::verify::http("https://checkip.amazonaws.com", None)?).trim().to_string();
     ip.parse::<std::net::Ipv4Addr>().context("could not determine this machine's public IPv4 address (use --allow-from)")?;
     Ok(ip)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_reused_name_does_not_authorize_instance_mutation() {
+        let inst: Instance = serde_json::from_value(serde_json::json!({"id":"42", "status":"RUNNING"})).unwrap();
+        assert!(check_instance(&inst, "demo", None).is_err());
+        assert!(check_instance(&inst, "demo", Some(41)).is_err());
+        assert!(check_instance(&inst, "demo", Some(42)).is_ok());
+    }
+
+    #[test]
+    fn firewall_ownership_requires_instance_and_narrow_scope() {
+        let mut rule = Firewall { description: firewall_owner("demo", 42), network: "https://www.googleapis.com/compute/v1/projects/p/global/networks/vcontainer".into(), target_tags: vec!["vcontainer-demo".into()] };
+        assert!(check_firewall(&rule, "demo", 42, false).is_ok());
+        assert!(check_firewall(&rule, "demo", 43, true).is_err());
+        rule.description.clear();
+        assert!(check_firewall(&rule, "demo", 42, false).is_err());
+        assert!(check_firewall(&rule, "demo", 42, true).is_ok());
+        rule.target_tags.clear();
+        assert!(check_firewall(&rule, "demo", 42, true).is_err());
+        rule.target_tags = vec!["vcontainer-demo".into()];
+        rule.network = "projects/p/global/networks/production".into();
+        assert!(check_firewall(&rule, "demo", 42, true).is_err());
+    }
 }

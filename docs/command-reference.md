@@ -9,6 +9,8 @@ Add **`--details`** to `run`, `deploy` or `verify` for all verification claims, 
 
 `--allow-from` and published ports control incoming connections only. vContainer does not implement outbound destination filtering or an egress allowlist.
 
+A name alone does not identify a session: reconnecting checks the saved instance ID. An unregistered or replacement VM with the same name is refused. If the registered VM was deleted, use `vcontainer rm --session NAME` to clean its old record before creating a new session. Cleanup also checks the firewall's ownership and preserves the local record if cloud cleanup fails, so it can be retried.
+
 **`vcontainer deploy --session NAME IMAGE`** verifies the session, sends the launch, verifies that the VM recorded it, and then lets the VM pull and start the image. `vcontainer pull` is an alias. Options:
 
 - `-p PORT` opens that TCP port to the `--allow-from` range; there is no port remapping.

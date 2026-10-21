@@ -15,8 +15,8 @@ You bring a container image and any secrets it needs. vContainer creates the VM,
 
 | Part | Size | Code |
 | --- | --- | --- |
-| Guest `/init`, protocol, and OCI client | **~1,450 lines of Rust** | [Guest](crates/init/src) · [Core](crates/core/src) |
-| CLI and verifier, on your machine | **~1,500 lines of Rust** | [CLI](crates/cli/src) |
+| Guest `/init`, protocol, and OCI client | **~1,500 lines of Rust** | [Guest](crates/init/src) · [Core](crates/core/src) |
+| CLI and verifier, on your machine | **~1,600 lines of Rust** | [CLI](crates/cli/src) |
 | Kernel configuration | **107 options** on top of `allnoconfig` | [Kernel config](image/kernel.config) |
 
 Line counts cover our own implementation, excluding blank lines, full-line comments, and tests. Linux and third-party dependencies are additional code the system relies on.

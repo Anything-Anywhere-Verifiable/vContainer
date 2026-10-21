@@ -158,6 +158,7 @@ fn main() {
 
 fn run(name: &str, zone: &str, machine_type: &str, allow_from: Option<String>, details: bool) -> Result<()> {
     let prev = state::find_session(name)?;
+    let expected_id = prev.as_ref().map(|s| s.policy.instance.id);
     let owner = crypto::owner_metadata(&state::owner_key()?);
     let source = match (allow_from, &prev) {
         (Some(c), _) => c,
@@ -169,28 +170,49 @@ fn run(name: &str, zone: &str, machine_type: &str, allow_from: Option<String>, d
         Some(p) => (p.project, p.zone, p.policy.release, p.policy.launch, p.ports),
         None => (gcp::project()?, zone.to_string(), state::release()?, None, vec![]),
     };
-    anim::step(Kind::Wait, "preparing the network and firewall", |_| "network and firewall ready".into(), || {
-        gcp::ensure_network(&project)?;
-        gcp::ensure_firewall(&project, name, &ports, &source)
-    })?;
-    let inst = match gcp::instance(&project, name, &zone)? {
+    let existing = gcp::instance(&project, name, &zone)?;
+    if let Some(inst) = &existing { gcp::check_instance(inst, name, expected_id)?; }
+    ensure!(existing.is_some() || expected_id.is_none(),
+        "the registered instance {name} no longer exists; run `vcontainer rm --session {name}` to clean its old record before creating a new session");
+    // Resolve all project metadata before creating a billable resource.
+    let project_number = gcp::project_number(&project)?;
+    let inst = match existing {
         Some(i) if i.status == "RUNNING" => i,
         Some(i) => anim::step(Kind::Wait, &format!("starting {name} (was {})", i.status), |_| format!("started {name}"), || {
             gcp::start(&project, name, &zone)?;
-            gcp::instance(&project, name, &zone)?.context("instance disappeared")
+            let started = gcp::instance(&project, name, &zone)?.context("instance disappeared")?;
+            gcp::check_instance(&started, name, expected_id)?;
+            Ok(started)
         })?,
         None => {
+            gcp::ensure_network(&project)?;
             let what = format!("TDX confidential VM {name}: {machine_type} in {zone}");
             anim::step(Kind::Wait, &format!("creating {what}"), |_| format!("created {what}"), || {
-                gcp::create_instance(&project, name, &zone, machine_type, &release.image, &release.project, &owner)?;
-                gcp::instance(&project, name, &zone)?.context("instance disappeared")
+                gcp::create_instance(&project, name, &zone, machine_type, &release.image, &release.project, &owner)
             })?
         }
     };
-    let instance = state::Instance { id: inst.id.parse()?, project_number: gcp::project_number(&project)?, zone: zone.clone() };
+    let instance = state::Instance { id: inst.id.parse()?, project_number, zone: zone.clone() };
+    let ip = match inst.ip() {
+        Some(ip) => ip,
+        None => {
+            let error = anyhow::anyhow!("instance has no external IP");
+            return Err(if expected_id.is_none() { rollback_create(&project, name, &zone, instance.id, error) } else { error });
+        }
+    };
     let policy = Policy { tee: "tdx".into(), owner, release, instance, launch, min_tcb_eval_num: MIN_TCB_EVAL_NUM, min_fw_svn: MIN_FW_SVN };
-    let mut s = Session { name: name.into(), project, zone, ip: inst.ip().context("instance has no external IP")?, source, ports, policy };
-    state::save_session(&s)?; // so `rm` works even if verification fails
+    let mut s = Session { name: name.into(), project, zone, ip, source, ports, policy };
+    if let Err(error) = state::save_session(&s) {
+        // A directory-sync error can occur after the atomic rename. Keep a
+        // fully written record usable by rm; roll back only an unrecorded VM.
+        let recorded = state::find_session(name).ok().flatten().is_some_and(|saved| saved.policy.instance.id == s.policy.instance.id);
+        return Err(if expected_id.is_none() && !recorded {
+            rollback_create(&s.project, name, &s.zone, s.policy.instance.id, error)
+        } else { error });
+    }
+    anim::step(Kind::Wait, "preparing the session firewall", |_| "session firewall ready".into(), || {
+        gcp::ensure_firewall(&s.project, name, &s.ports, &s.source, s.policy.instance.id, expected_id.is_some())
+    })?;
     let wait = format!("waiting for {} to boot and answer attestation", s.url());
     let (ev, nonce) = anim::step(Kind::Verify, &wait, |_| format!("{name} returned attestation evidence"), || wait_evidence(&s, Duration::from_secs(300)))?;
     let v = terminal::verify(&format!("session {name} / {} / {}", s.ip, s.zone), &ev, &nonce, &s.policy)?;
@@ -205,6 +227,13 @@ fn run(name: &str, zone: &str, machine_type: &str, allow_from: Option<String>, d
         println!("\nsession {name} is ready. Deploy a container:\n  vcontainer deploy --session {name} IMAGE [-p PORT] [--secret NAME=@FILE]");
     }
     Ok(())
+}
+
+fn rollback_create(project: &str, name: &str, zone: &str, instance_id: u64, error: anyhow::Error) -> anyhow::Error {
+    match gcp::delete_instance(project, name, zone, instance_id) {
+        Ok(()) => error.context("new VM removed because its session could not be recorded"),
+        Err(cleanup) => error.context(format!("new VM {name} (ID {instance_id}, project {project}, zone {zone}) could not be recorded or safely removed: {cleanup:#}; inspect this resource before retrying")),
+    }
 }
 
 fn wait_evidence(s: &Session, timeout: Duration) -> Result<(Evidence, [u8; 32])> {
@@ -317,7 +346,10 @@ fn deploy(name: &str, args: Option<LaunchArgs>, details: bool) -> Result<()> {
     );
     terminal::gate("Recorded launch matches. The owner can now authorize the image pull.");
     anim::step(Kind::Sign, "opening the ports and signing the commit", |_| "committed: the VM may pull the image".into(), || {
-        gcp::ensure_firewall(&s.project, name, &s.ports, &s.source)?;
+        // The cloud name may have been reused since the last command.
+        let inst = gcp::instance(&s.project, name, &s.zone)?.context("session instance disappeared before commit")?;
+        gcp::check_instance(&inst, name, Some(s.policy.instance.id))?;
+        gcp::ensure_firewall(&s.project, name, &s.ports, &s.source, s.policy.instance.id, true)?;
         let commit = CommitRequest { sig: crypto::sign(&owner, &owner_message("commit", &v.boot, &payload)) };
         verify::post(&s.url(), "/v1/commit", &commit)
     })?;
@@ -437,7 +469,7 @@ fn logs(name: &str) -> Result<()> {
 fn rm(name: &str) -> Result<()> {
     let s = state::load_session(name)?;
     anim::step(Kind::Wait, &format!("deleting VM {name} and its firewall rule"), |_| format!("deleted session {name}"), || {
-        gcp::delete(&s.project, &s.name, &s.zone)
+        gcp::delete(&s.project, &s.name, &s.zone, s.policy.instance.id)
     })?;
     state::remove_session(name)?;
     Ok(())

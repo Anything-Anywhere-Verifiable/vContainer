@@ -60,6 +60,8 @@ Boot it on real TDX VMs and collect their serial logs (the script deletes the VM
 PROJECT=PROJECT BUCKET=BUCKET tools/tdx-probe/gce-run.sh c3-standard-4 c3-standard-8
 ```
 
+`PROBE DONE` means collection ended. A successful probe also prints `PROBE RESULT PASS`; failed checks, panics, timeouts and cleanup failures make the runner return a nonzero exit status. Cleanup checks this run's random label and the resource's immutable ID before deleting it.
+
 Check the offline RTMR1 prediction against a probe log:
 
 ```sh

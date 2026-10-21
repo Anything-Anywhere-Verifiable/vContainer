@@ -1,9 +1,10 @@
 //! Layer unpack helper (`/init --stage unpack`). It opens the verified layer
 //! at LAYER (outside the new root), then chroots into ROOT, so absolute
 //! symlinks in the image resolve inside it. Entries apply in archive order,
-//! as in containerd and moby: `.wh.<x>` removes x, `.wh..wh..opq` removes
-//! what the directory held except this layer's own entries, and any other
-//! entry replaces what was there unless both are directories.
+//! but whiteouts remove only lower-layer contents: `.wh.<x>` removes x and
+//! `.wh..wh..opq` clears its directory, both preserving this layer's own
+//! entries regardless of their order. Other entries replace what was there
+//! unless both are directories.
 
 use anyhow::{bail, ensure, Context, Result};
 use flate2::read::MultiGzDecoder;
@@ -33,6 +34,14 @@ pub fn main() -> Result<()> {
     } else {
         Box::new(BufReader::new(&layer))
     };
+    unpack(reader, Path::new("/"))?;
+    let left = layer.metadata()?.len() - layer.stream_position()?;
+    ensure!(left == 0, "layer has {left} unconsumed bytes after its last frame");
+    Ok(())
+}
+
+/// Production passes `/` after chroot; tests use a private temporary root.
+fn unpack(reader: impl Read, root: &Path) -> Result<()> {
     let mut archive = Archive::new(reader);
     archive.set_preserve_permissions(true);
     archive.set_preserve_ownerships(true);
@@ -44,11 +53,16 @@ pub fn main() -> Result<()> {
         let mut entry = entry?;
         let path = clean(&entry.path()?)?;
         let (Some(name), Some(dir)) = (path.file_name(), path.parent()) else { continue };
-        let (dir, full) = (Path::new("/").join(dir), Path::new("/").join(&path));
+        let (dir, full) = (root.join(dir), root.join(&path));
         if name == ".wh..wh..opq" {
-            opaque(&fs::canonicalize(&dir).unwrap_or(dir), &extracted)?;
+            if let Some(dir) = resolved_dir(&dir)? {
+                opaque(&dir, &extracted)?;
+            }
         } else if let Some(target) = name.as_bytes().strip_prefix(b".wh.") {
-            remove(&dir.join(OsStr::from_bytes(target)))?;
+            ensure!(!target.is_empty() && target != b"." && target != b"..", "invalid whiteout: {}", path.display());
+            if let Some(dir) = resolved_dir(&dir)? {
+                remove_lower(&dir.join(OsStr::from_bytes(target)), &extracted)?;
+            }
         } else {
             let kind = entry.header().entry_type();
             if !(kind.is_dir() && fs::symlink_metadata(&full).is_ok_and(|m| m.is_dir())) {
@@ -65,15 +79,18 @@ pub fn main() -> Result<()> {
                     fs::set_permissions(&full, std::os::unix::fs::PermissionsExt::from_mode(mode))?;
                 }
                 _ => {
-                    entry.unpack_in("/").with_context(|| format!("extract {}", path.display()))?;
+                    ensure!(entry.unpack_in(root).with_context(|| format!("extract {}", path.display()))?, "unsafe path in layer: {}", path.display());
                 }
             }
             // Where the entry really is (its parent may be a symlink), and its
-            // ancestors: an opaque marker hides only what lower layers left.
-            let real = fs::canonicalize(&dir).unwrap_or(dir).join(name);
-            for a in real.ancestors() {
-                if !extracted.insert(a.to_path_buf()) {
-                    break;
+            // ancestors: whiteouts hide only what lower layers left. Keeping
+            // ancestors also preserves directories created implicitly by a file.
+            if let Some(dir) = resolved_dir(&dir)? {
+                let real = dir.join(name);
+                for a in real.ancestors() {
+                    if !extracted.insert(a.to_path_buf()) {
+                        break;
+                    }
                 }
             }
         }
@@ -81,21 +98,44 @@ pub fn main() -> Result<()> {
     // Whatever follows the tar end-of-archive must still be read, so the
     // rootfs never differs from what another runtime would extract.
     io::copy(&mut archive.into_inner(), &mut io::sink())?;
-    let left = layer.metadata()?.len() - layer.stream_position()?;
-    ensure!(left == 0, "layer has {left} unconsumed bytes after its last frame");
     Ok(())
+}
+
+fn absent(e: &io::Error) -> bool {
+    matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::NotADirectory)
+}
+
+/// Whiteouts of absent paths are harmless; resolution failures are not.
+fn resolved_dir(dir: &Path) -> Result<Option<PathBuf>> {
+    match fs::canonicalize(dir) {
+        Ok(dir) => Ok(Some(dir)),
+        Err(e) if absent(&e) => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("resolve layer directory {}", dir.display())),
+    }
+}
+
+/// Removes a lower-layer path, retaining this layer's entries and ancestors.
+fn remove_lower(path: &Path, extracted: &HashSet<PathBuf>) -> Result<()> {
+    if !extracted.contains(path) {
+        return remove(path);
+    }
+    match fs::symlink_metadata(path) {
+        Ok(m) if m.is_dir() => opaque(path, extracted),
+        Ok(_) => Ok(()),
+        Err(e) if absent(&e) => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("inspect layer path {}", path.display())),
+    }
 }
 
 /// Removes everything below `dir` (resolved) that this layer did not extract.
 fn opaque(dir: &Path, extracted: &HashSet<PathBuf>) -> Result<()> {
-    let Ok(children) = fs::read_dir(dir) else { return Ok(()) };
+    let children = match fs::read_dir(dir) {
+        Ok(children) => children,
+        Err(e) if absent(&e) => return Ok(()),
+        Err(e) => return Err(e).with_context(|| format!("read layer directory {}", dir.display())),
+    };
     for child in children {
-        let p = child?.path();
-        if !extracted.contains(&p) {
-            remove(&p)?;
-        } else if fs::symlink_metadata(&p)?.is_dir() {
-            opaque(&p, extracted)?;
-        }
+        remove_lower(&child?.path(), extracted)?;
     }
     Ok(())
 }
@@ -104,7 +144,8 @@ fn remove(p: &Path) -> Result<()> {
     match fs::symlink_metadata(p) {
         Ok(m) if m.is_dir() => fs::remove_dir_all(p)?,
         Ok(_) => fs::remove_file(p)?,
-        Err(_) => {}
+        Err(e) if absent(&e) => {}
+        Err(e) => return Err(e).with_context(|| format!("inspect layer path {}", p.display())),
     }
     Ok(())
 }
@@ -120,4 +161,179 @@ fn clean(p: &Path) -> Result<PathBuf> {
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::MetadataExt;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    struct Root(PathBuf);
+
+    impl Root {
+        fn new() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            loop {
+                let path = std::env::temp_dir().join(format!("vcontainer-unpack-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+                match fs::create_dir(&path) {
+                    Ok(()) => return Self(path),
+                    Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                    Err(e) => panic!("create fixture root: {e}"),
+                }
+            }
+        }
+
+        fn apply(&self, entries: &[Node<'_>]) -> Result<()> {
+            let owner = fs::metadata(&self.0)?;
+            let mut builder = tar::Builder::new(Vec::new());
+            for entry in entries {
+                let mut header = tar::Header::new_ustar();
+                header.set_uid(owner.uid() as u64);
+                header.set_gid(owner.gid() as u64);
+                header.set_mtime(0);
+                let (name, data): (&str, &[u8]) = match entry {
+                    Node::File(name, data) => {
+                        header.set_entry_type(EntryType::Regular);
+                        header.set_mode(0o644);
+                        (*name, *data)
+                    }
+                    Node::Dir(name) => {
+                        header.set_entry_type(EntryType::Directory);
+                        header.set_mode(0o755);
+                        (*name, &[])
+                    }
+                    Node::Link(name, target) => {
+                        header.set_entry_type(EntryType::Symlink);
+                        header.set_link_name(*target)?;
+                        header.set_mode(0o777);
+                        (*name, &[])
+                    }
+                };
+                header.set_size(data.len() as u64);
+                builder.append_data(&mut header, name, data)?;
+            }
+            unpack(io::Cursor::new(builder.into_inner()?), &self.0)
+        }
+
+        fn read(&self, name: &str) -> Vec<u8> {
+            fs::read(self.0.join(name)).unwrap()
+        }
+
+        fn exists(&self, name: &str) -> bool {
+            fs::symlink_metadata(self.0.join(name)).is_ok()
+        }
+    }
+
+    impl Drop for Root {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum Node<'a> {
+        File(&'a str, &'a [u8]),
+        Dir(&'a str),
+        Link(&'a str, &'a str),
+    }
+
+    use Node::{Dir, File, Link};
+
+    #[test]
+    fn ordinary_whiteout_keeps_same_layer_file_in_either_order() {
+        for whiteout_first in [false, true] {
+            let root = Root::new();
+            root.apply(&[File("etc/policy", b"old")]).unwrap();
+            let mut upper = vec![File("etc/policy", b"new"), File("etc/.wh.policy", b"")];
+            if whiteout_first {
+                upper.reverse();
+            }
+            root.apply(&upper).unwrap();
+            assert_eq!(root.read("etc/policy"), b"new");
+        }
+    }
+
+    #[test]
+    fn ordinary_whiteout_keeps_descendants_but_removes_lower_siblings() {
+        for whiteout_first in [false, true] {
+            let root = Root::new();
+            root.apply(&[File("d/old", b"old"), File("d/sub/old", b"old"), File("d/other/old", b"old")]).unwrap();
+            let mut upper = vec![File("d/new", b"new"), File("d/sub/new", b"new"), File(".wh.d", b"")];
+            if whiteout_first {
+                upper.rotate_right(1);
+            }
+            root.apply(&upper).unwrap();
+            assert_eq!(root.read("d/new"), b"new");
+            assert_eq!(root.read("d/sub/new"), b"new");
+            for name in ["d/old", "d/sub/old", "d/other"] {
+                assert!(!root.exists(name), "retained lower-layer {name}");
+            }
+        }
+    }
+
+    #[test]
+    fn ordinary_whiteout_keeps_explicit_empty_same_layer_directory() {
+        let root = Root::new();
+        root.apply(&[File("d/old", b"old")]).unwrap();
+        root.apply(&[Dir("d"), File(".wh.d", b"")]).unwrap();
+        assert!(root.0.join("d").is_dir());
+        assert_eq!(fs::read_dir(root.0.join("d")).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn ordinary_whiteout_removes_lower_file_directory_and_symlink() {
+        let root = Root::new();
+        root.apply(&[File("old", b"old"), File("d/old", b"old"), File("target/old", b"old"), Link("link", "target")]).unwrap();
+        root.apply(&[File(".wh.old", b""), File(".wh.d", b""), File(".wh.link", b""), File("missing/.wh.absent", b"")]).unwrap();
+        for name in ["old", "d", "link", "missing"] {
+            assert!(!root.exists(name), "retained lower-layer {name}");
+        }
+        assert_eq!(root.read("target/old"), b"old");
+    }
+
+    #[test]
+    fn ordinary_and_opaque_whiteouts_preserve_same_layer_contents() {
+        let upper = [File("d/new", b"new"), File("d/sub/new", b"new"), File(".wh.d", b""), File("d/.wh..wh..opq", b"")];
+        for order in [[0, 1, 2, 3], [0, 1, 3, 2], [2, 3, 0, 1], [3, 2, 0, 1], [0, 2, 1, 3], [0, 3, 1, 2]] {
+            let root = Root::new();
+            root.apply(&[File("d/old", b"old"), File("d/sub/old", b"old")]).unwrap();
+            root.apply(&order.map(|i| upper[i])).unwrap();
+            assert_eq!(root.read("d/new"), b"new");
+            assert_eq!(root.read("d/sub/new"), b"new");
+            assert!(!root.exists("d/old"));
+            assert!(!root.exists("d/sub/old"));
+            assert!(!root.exists(".wh.d"));
+            assert!(!root.exists("d/.wh..wh..opq"));
+        }
+    }
+
+    #[test]
+    fn whiteouts_resolve_parent_symlinks_and_preserve_same_layer_symlink() {
+        let root = Root::new();
+        root.apply(&[File("target/old", b"old"), Link("alias", "target")]).unwrap();
+        root.apply(&[File("alias/new", b"new"), File("alias/.wh.new", b""), File("alias/.wh.old", b""), Link("own-link", "target"), File(".wh.own-link", b"")]).unwrap();
+        assert_eq!(root.read("target/new"), b"new");
+        assert!(!root.exists("target/old"));
+        assert_eq!(fs::read_link(root.0.join("own-link")).unwrap(), Path::new("target"));
+    }
+
+    #[test]
+    fn whiteouts_reject_empty_dot_and_parent_targets() {
+        for marker in [".wh.", ".wh..", ".wh..."] {
+            let root = Root::new();
+            root.apply(&[File("keep", b"keep")]).unwrap();
+            assert!(root.apply(&[File(marker, b"")]).is_err(), "accepted {marker}");
+            assert_eq!(root.read("keep"), b"keep");
+        }
+    }
+
+    #[test]
+    fn whiteouts_propagate_parent_resolution_errors() {
+        for marker in ["loop/.wh.file", "loop/.wh..wh..opq"] {
+            let root = Root::new();
+            root.apply(&[Link("loop", "loop")]).unwrap();
+            assert!(root.apply(&[File(marker, b"")]).is_err(), "ignored symlink loop for {marker}");
+        }
+    }
 }

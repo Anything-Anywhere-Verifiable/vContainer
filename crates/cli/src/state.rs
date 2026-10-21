@@ -5,8 +5,9 @@
 use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use vcontainer_core::crypto::{self, SigningKey};
 
 /// A published boot image and its expected measurements (written by `vcontainer publish`).
@@ -97,7 +98,38 @@ pub fn release() -> Result<Release> {
 }
 
 pub fn save_release(r: &Release) -> Result<()> {
-    fs::write(dir()?.join("release.json"), serde_json::to_vec_pretty(r)?)?;
+    atomic_write(&dir()?.join("release.json"), &serde_json::to_vec_pretty(r)?)
+}
+
+/// Keep the previous record intact until the complete replacement is durable.
+fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+    atomic_write_with(path, |file| file.write_all(bytes))
+}
+
+/// A guard also removes a partial temporary file during panic unwinding.
+struct TemporaryRecord(PathBuf);
+impl Drop for TemporaryRecord {
+    fn drop(&mut self) { let _ = fs::remove_file(&self.0); }
+}
+
+fn atomic_write_with(path: &Path, write: impl FnOnce(&mut fs::File) -> std::io::Result<()>) -> Result<()> {
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+    let directory = fs::File::open(parent).with_context(|| format!("open state directory {}", parent.display()))?;
+    let name = path.file_name().context("state path has no filename")?;
+    let mut temporary_name = std::ffi::OsString::from(".");
+    temporary_name.push(name);
+    temporary_name.push(format!(".{}.tmp", vcontainer_core::hex(&crypto::random::<16>())));
+    let temporary = parent.join(temporary_name);
+    let mut file = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temporary)
+        .with_context(|| format!("create temporary state record for {}", path.display()))?;
+    let cleanup = TemporaryRecord(temporary);
+    write(&mut file).with_context(|| format!("write state record {}", path.display()))?;
+    file.sync_all().with_context(|| format!("sync state record {}", path.display()))?;
+    drop(file);
+    fs::rename(&cleanup.0, path).with_context(|| format!("replace state record {}", path.display()))?;
+    // After rename, the new record is visible even if this final durability
+    // check fails; never report such an error as though the old file survived.
+    directory.sync_all().with_context(|| format!("state record {} was replaced, but syncing its directory failed", path.display()))?;
     Ok(())
 }
 
@@ -127,8 +159,7 @@ pub fn load_session(name: &str) -> Result<Session> {
 }
 
 pub fn save_session(s: &Session) -> Result<()> {
-    fs::write(session_path(&s.name)?, serde_json::to_vec_pretty(s)?)?;
-    Ok(())
+    atomic_write(&session_path(&s.name)?, &serde_json::to_vec_pretty(s)?)
 }
 
 pub fn remove_session(name: &str) -> Result<()> {
@@ -154,6 +185,81 @@ pub fn sessions() -> Result<Vec<Session>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct TestDirectory(PathBuf);
+    impl TestDirectory {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!("vcontainer-state-test-{}", vcontainer_core::hex(&crypto::random::<16>())));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+        fn assert_only_record(&self, path: &Path) {
+            let entries: Vec<_> = fs::read_dir(&self.0).unwrap().map(|entry| entry.unwrap().path()).collect();
+            assert_eq!(entries, vec![path.to_path_buf()], "temporary state files leaked");
+        }
+    }
+    impl Drop for TestDirectory {
+        fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+    }
+
+    #[test]
+    fn failed_write_keeps_the_previous_record_and_removes_partial_file() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("demo.json");
+        let old = br#"{"name":"demo","launch":"previous"}"#;
+        fs::write(&path, old).unwrap();
+        let result = atomic_write_with(&path, |file| {
+            file.write_all(b"{\"launch\":")?;
+            Err(std::io::Error::other("injected write failure"))
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read(&path).unwrap(), old);
+        directory.assert_only_record(&path);
+    }
+
+    #[test]
+    fn interrupted_write_keeps_the_previous_record_and_removes_partial_file() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("demo.json");
+        let old = br#"{"name":"demo","launch":"previous"}"#;
+        fs::write(&path, old).unwrap();
+        let interrupted = std::panic::catch_unwind(|| atomic_write_with(&path, |file| {
+            file.write_all(b"{\"launch\":")?;
+            panic!("injected interruption before commit");
+        }));
+        assert!(interrupted.is_err());
+        assert_eq!(fs::read(&path).unwrap(), old);
+        directory.assert_only_record(&path);
+    }
+
+    #[test]
+    fn replacement_is_not_visible_until_the_writer_finishes() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("release.json");
+        let old = br#"{"release":"previous"}"#;
+        let new = br#"{"release":"complete replacement"}"#;
+        fs::write(&path, old).unwrap();
+        atomic_write_with(&path, |file| {
+            file.write_all(&new[..8])?;
+            assert_eq!(fs::read(&path)?, old);
+            file.write_all(&new[8..])
+        }).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), new);
+        assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o077, 0);
+        directory.assert_only_record(&path);
+    }
+
+    #[test]
+    fn rename_failure_does_not_remove_the_destination_or_leave_a_temporary_file() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("demo.json");
+        fs::create_dir(&path).unwrap();
+        let marker = path.join("original");
+        fs::write(&marker, b"keep").unwrap();
+        assert!(atomic_write(&path, b"replacement").is_err());
+        assert_eq!(fs::read(marker).unwrap(), b"keep");
+        directory.assert_only_record(&path);
+    }
 
     #[test]
     fn session_names() {

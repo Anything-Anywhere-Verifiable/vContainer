@@ -34,8 +34,8 @@ class InstallTests(unittest.TestCase):
             self.assertEqual(install.main(["--dev", "--clean", "--install-root", "/tmp/cli root"]), 0)
         commands = [call.args[0] for call in execute.call_args_list]
         self.assertEqual(commands[0], ["bash", str(install.REPO / "scripts/build-image.sh"), "--dev", "--clean"])
-        self.assertEqual(commands[1][-2:], ["--root", "/tmp/cli root"])
-        self.assertEqual(commands[-1], ["/tmp/cli root/bin/vcontainer", "measure", "--dir", str(install.REPO / "out")])
+        self.assertEqual(commands[1][-2:], ["--root", str(Path("/tmp/cli root").resolve())])
+        self.assertEqual(commands[-1], [str(Path("/tmp/cli root/bin/vcontainer").resolve()), "measure", "--dir", str(install.REPO / "out")])
         self.assertEqual(len(commands), 4)
         for call in execute.call_args_list:
             self.assertEqual(call.kwargs["cwd"], install.REPO)
@@ -119,7 +119,7 @@ class InstallTests(unittest.TestCase):
             ["/tmp/rust tools/bin/rustup", "toolchain", "install", "--profile", "minimal", "--no-self-update"],
             ["cargo", "--version"],
         ])
-        self.assertEqual(env["PATH"], "/tmp/rust tools/bin" + os.pathsep + "/usr/bin")
+        self.assertEqual(env["PATH"], str(Path("/tmp/rust tools/bin").resolve()) + os.pathsep + "/usr/bin")
         self.assertEqual(execute.call_args.kwargs["cwd"], install.REPO)
 
     def test_missing_rustup_bootstraps_then_prepares_toolchain(self):
@@ -137,7 +137,7 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(commands[1], [
             "sh", script, "-y", "--no-modify-path", "--profile", "minimal", "--default-toolchain", "none",
         ])
-        self.assertEqual(commands[2][:3], ["/tmp/rust tools/bin/rustup", "toolchain", "install"])
+        self.assertEqual(commands[2][:3], [str(Path("/tmp/rust tools/bin/rustup").resolve()), "toolchain", "install"])
         self.assertEqual(commands[3], ["cargo", "--version"])
         self.assertFalse(Path(script).exists())
 

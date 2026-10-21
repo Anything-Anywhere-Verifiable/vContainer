@@ -1,7 +1,7 @@
 //! tdx-probe: a throwaway /init for the M0 boot of the vcontainer image on a
 //! GCE C3 TDX VM. It prints everything to ttyS0 (read back with
 //! `gcloud compute instances get-serial-port-output`), never stops on an
-//! error, prints `PROBE DONE`, waits 120 s and powers off.
+//! error, prints `PROBE RESULT PASS/FAIL` and `PROBE DONE`, then powers off.
 
 mod sha;
 mod sys;
@@ -23,6 +23,7 @@ type R = Result<(), String>;
 
 #[derive(Default)]
 struct State {
+    failures: usize,
     kmsg_len: usize,
     device: Option<String>,
     gw: Option<Ipv4Addr>,
@@ -47,8 +48,14 @@ fn step(st: &mut State, name: &str, f: fn(&mut State) -> R) {
     println!("--- {name}");
     match catch_unwind(AssertUnwindSafe(|| f(st))) {
         Ok(Ok(())) => {}
-        Ok(Err(msg)) => println!("ERR {name}: {msg}"),
-        Err(_) => println!("ERR {name}: panicked"),
+        Ok(Err(msg)) => {
+            st.failures += 1;
+            println!("ERR {name}: {msg}");
+        }
+        Err(_) => {
+            st.failures += 1;
+            println!("ERR {name}: panicked");
+        }
     }
 }
 
@@ -75,6 +82,7 @@ fn main() {
     step(&mut st, "pzid", pzid);
     step(&mut st, "rtmr3 extend", rtmr3);
     step(&mut st, "kmsg tail", kmsg_tail);
+    println!("PROBE RESULT {}", if st.failures == 0 { "PASS" } else { "FAIL" });
     println!("PROBE DONE");
     std::thread::sleep(Duration::from_secs(120));
     println!("powering off");
@@ -162,7 +170,14 @@ fn routes(st: &mut State) -> R {
     println!("ROUTE ADD {gw}/32 dev {dev}: {}", host.as_ref().map(|_| "OK".to_string()).unwrap_or_else(|x| x.to_string()));
     let def = sys::add_route(any, any, gw, sys::RTF_UP | sys::RTF_GATEWAY, &dev);
     println!("ROUTE ADD default via {gw} dev {dev}: {}", def.as_ref().map(|_| "OK".to_string()).unwrap_or_else(|x| x.to_string()));
-    def.map_err(e("default route"))
+    for (name, result) in [("host route", host), ("default route", def)] {
+        if let Err(err) = result {
+            if err.raw_os_error() != Some(17) { // EEXIST: kernel DHCP installed it.
+                return Err(format!("{name}: {err}"));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Plain HTTP/1.0 GET; returns (status line, body).
@@ -185,6 +200,10 @@ fn metadata(st: &mut State) -> R {
         match r {
             Ok((status, body)) => {
                 println!("META {path}: [{status}] {body}");
+                if status.split_whitespace().nth(1) != Some("200") {
+                    failed += 1;
+                    continue;
+                }
                 let v = Some(body.trim().to_string());
                 match path {
                     "instance/id" => st.instance_id = v,
@@ -207,12 +226,16 @@ fn internet(_: &mut State) -> R {
     let pnp = fs::read_to_string("/proc/net/pnp").map_err(e("/proc/net/pnp"))?;
     fs::write("/etc/resolv.conf", &pnp).map_err(e("/etc/resolv.conf"))?;
     let t = TcpStream::connect_timeout(&"1.1.1.1:80".parse().unwrap(), Duration::from_secs(5));
-    println!("INET tcp 1.1.1.1:80: {}", t.map(|_| "connected".to_string()).unwrap_or_else(|x| x.to_string()));
+    println!("INET tcp 1.1.1.1:80: {}", t.as_ref().map(|_| "connected".to_string()).unwrap_or_else(|x| x.to_string()));
+    t.map_err(e("Internet TCP"))?;
     let host = "connectivitycheck.gstatic.com";
     let addr = (host, 80).to_socket_addrs().map_err(e("DNS"))?.find(SocketAddr::is_ipv4).ok_or("DNS: no IPv4 address")?;
     println!("DNS {host} -> {}", addr.ip());
     let (status, _) = http_get(addr, host, "/generate_204", "")?;
     println!("INET http://{host}/generate_204: {status}");
+    if status.split_whitespace().nth(1) != Some("204") {
+        return Err(format!("Internet HTTP: expected 204, got {status}"));
+    }
     Ok(())
 }
 
@@ -221,6 +244,7 @@ fn loopback(_: &mut State) -> R {
     let fl = fs::read_to_string("/sys/class/net/lo/flags").map_err(e("flags"))?;
     let flags = u32::from_str_radix(fl.trim().trim_start_matches("0x"), 16).unwrap_or(0);
     println!("LO: operstate={} flags={} IFF_UP={}", op.trim(), fl.trim(), flags & 1 == 1);
+    if flags & 1 == 0 { return Err("loopback is not up".into()); }
     Ok(())
 }
 
@@ -241,6 +265,9 @@ fn measurements(st: &mut State) -> R {
     }
     let zero = |n| st.mr(n).map(|v| v.iter().all(|&b| b == 0));
     println!("MR rtmr2 all-zero: {:?}, rtmr3 all-zero: {:?}", zero("rtmr2:sha384"), zero("rtmr3:sha384"));
+    if zero("rtmr2:sha384") != Some(true) || zero("rtmr3:sha384") != Some(true) {
+        failed.push("RTMR2/RTMR3 are not zero before the probe extend".into());
+    }
     if failed.is_empty() { Ok(()) } else { Err(failed.join("; ")) }
 }
 
@@ -258,7 +285,7 @@ fn ccel(st: &mut State) -> R {
     println!("CCEL_B64: {}", base64(&log));
     let (events, stop) = tcg::parse(&log);
     if let Some(why) = stop {
-        println!("CCEL parse stopped early: {why}");
+        return Err(format!("CCEL parse stopped early: {why}"));
     }
     let mut regs = [[0u8; 48]; 5];
     for (i, ev) in events.iter().enumerate() {
@@ -292,7 +319,10 @@ fn quote(st: &mut State) -> R {
 fn quote_inner(st: &mut State) -> R {
     let read = |f: &str| fs::read(format!("{TSM}/{f}")).map_err(e(f));
     let gen = |v: Vec<u8>| String::from_utf8_lossy(&v).trim().parse::<u64>().unwrap_or(u64::MAX);
-    println!("QUOTE provider: {}", String::from_utf8_lossy(&read("provider")?).trim());
+    let provider = read("provider")?;
+    let provider = String::from_utf8_lossy(&provider);
+    println!("QUOTE provider: {}", provider.trim());
+    if provider.trim() != "tdx_guest" { return Err("unexpected quote provider".into()); }
     let g0 = gen(read("generation")?);
     let inblob = sha512(b"vcontainer-probe report_data");
     let mut f = fs::OpenOptions::new().write(true).open(format!("{TSM}/inblob")).map_err(e("open inblob"))?;
@@ -304,11 +334,15 @@ fn quote_inner(st: &mut State) -> R {
     let t = std::time::Instant::now();
     let out = read("outblob")?;
     let g1 = gen(read("generation")?);
-    println!("QUOTE generation {g0} -> {g1} ({}), outblob {} bytes in {:?}", if g1 == g0 + 1 { "OK" } else { "UNEXPECTED" }, out.len(), t.elapsed());
+    let generation_ok = g0.checked_add(1) == Some(g1);
+    println!("QUOTE generation {g0} -> {g1} ({}), outblob {} bytes in {:?}", if generation_ok { "OK" } else { "UNEXPECTED" }, out.len(), t.elapsed());
+    if !generation_ok { return Err("quote generation did not advance once".into()); }
     let sig_len = out.get(0x278..0x27C).map(|b| u32::from_le_bytes(b.try_into().unwrap())).ok_or("outblob too short")?;
     let len = 0x27C + sig_len as usize;
     let q = out.get(..len).ok_or("signature length beyond outblob")?;
-    println!("QUOTE length {len} (padding all zero: {})", out[len..].iter().all(|&b| b == 0));
+    let padding_ok = out[len..].iter().all(|&b| b == 0);
+    println!("QUOTE length {len} (padding all zero: {padding_ok})");
+    if !padding_ok { return Err("nonzero quote padding".into()); }
     let u16at = |o: usize| u16::from_le_bytes([q[o], q[o + 1]]);
     let body = &q[48..];
     println!(
@@ -325,8 +359,11 @@ fn quote_inner(st: &mut State) -> R {
         let v = &body[off..off + 48];
         let same = st.mr(name).map(|m| m == v);
         println!("QUOTE {name} {} sysfs:{}", hex(v), match same { Some(true) => "same", Some(false) => "DIFFERENT", None => "n/a" });
+        if same != Some(true) { return Err(format!("quote {name} does not match sysfs")); }
     }
-    println!("QUOTE report_data matches inblob: {}", body[520..584] == inblob);
+    let report_data_ok = body[520..584] == inblob;
+    println!("QUOTE report_data matches inblob: {report_data_ok}");
+    if !report_data_ok { return Err("quote report_data mismatch".into()); }
     println!("QUOTE_B64: {}", base64(q));
     Ok(())
 }
@@ -342,6 +379,7 @@ fn pzid(st: &mut State) -> R {
     let m = st.mr("mrowner").map(|v| v == h);
     println!("PZID {json}");
     println!("PZID sha384={} mrowner match: {:?}", hex(&h), m);
+    if m != Some(true) { return Err("PZID does not match MROWNER".into()); }
     Ok(())
 }
 
@@ -367,4 +405,19 @@ fn kmsg_tail(st: &mut State) -> R {
         println!("KMSG+ {l}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod result_tests {
+    use super::*;
+
+    #[test]
+    fn failed_or_panicking_checks_are_counted() {
+        let mut state = State::default();
+        step(&mut state, "success", |_| Ok(()));
+        assert_eq!(state.failures, 0);
+        step(&mut state, "failure", |_| Err("check failed".into()));
+        step(&mut state, "panic", |_| panic!("check panicked"));
+        assert_eq!(state.failures, 2);
+    }
 }

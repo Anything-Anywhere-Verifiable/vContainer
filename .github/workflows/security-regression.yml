@@ -1,0 +1,38 @@
+name: Security regressions
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - crates/**
+      - scripts/**
+      - tools/tdx-probe/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - .github/workflows/security-regression.yml
+  pull_request:
+    paths:
+      - crates/**
+      - scripts/**
+      - tools/tdx-probe/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - .github/workflows/security-regression.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: cargo test --locked --workspace
+      - run: cargo test --locked --manifest-path tools/tdx-probe/Cargo.toml
+      - run: cargo build --locked -p vcontainer
+      # These suites substitute gcloud and use only temporary local state.
+      - run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
+      - run: python3 -m unittest discover -s tools/tdx-probe -p 'test_*.py' -v
