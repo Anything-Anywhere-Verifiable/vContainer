@@ -9,15 +9,28 @@ vContainer manages deployment and verification for your containerized agent. You
 - **Deliver secrets:** encrypt API keys to the verified VM and expose them to your agent as files.
 - **Share verification:** give your users a policy file so they can check the same evidence.
 
+<<<<<<< HEAD
 | Deployment guide | Start with |
 |---|---|
 | [Deploy a container](docs/deploy-a-container.md) | A public hello-world image or another container you already have |
 | [Deploy an OpenRouter agent](docs/deploy-an-openrouter-agent.md) | The included Python agent and your OpenRouter API key |
 | [Deploy your own agent](docs/deploy-your-agent.md) | Your agent code and a Dockerfile |
-
-To try it first, [install vContainer](#install) and [run hello-world](#example-1-a-public-image). For the privacy boundary, including application traffic and logs, see [Trust](#trust).
+=======
+**Contents:** [How it works](#how-it-works) · [Quick start](#quick-start) · [Install](#install) · [More examples](#more-examples) · [Command reference](#command-reference) · [Trust](#trust) · [Status](#status)
 
 ## How it works
+
+vContainer keeps the code you have to trust small:
+
+| Part | Size |
+|---|---|
+| Code we wrote that runs in the VM (`/init` and the protocol) | about 1,450 lines of Rust |
+| CLI and verifier, on your machine | about 1,100 lines of Rust |
+| Kernel configuration | `allnoconfig` plus 107 options |
+| Build scripts | about 110 lines of shell |
+>>>>>>> 89b711f6842958daf4572c1ad3f62d4328de7694
+
+To try it first, [install vContainer](#install) and [run hello-world](#example-1-a-public-image). For the privacy boundary, including application traffic and logs, see [Trust](#trust).
 
 The steps below are for the demo platform, Intel TDX on Google Cloud C3.
 
@@ -48,6 +61,7 @@ sequenceDiagram
 
 As a result, you have verified the VM's boot and its empty state before it pulls anything, and secrets reach only that VM. The container cannot extend the register or request quotes over its own data, so it cannot forge the evidence.
 
+<<<<<<< HEAD
 The VM boots a single file: a Linux kernel with a built-in initramfs whose only program is `/init`. There is no bootloader, root disk, systemd or container runtime. Until a container is deployed, the VM runs only the kernel and `/init`. The build is designed to be reproducible, and the file's measurement is predicted offline.
 
 ## Install
@@ -149,6 +163,15 @@ Release builds require a clean Git checkout. While changing code or documentatio
 A session is one VM, and each boot of it runs one container. You start a session, deploy one container into it, and remove the session when you are done. Try the examples below, or use the deployment guides above for a full walkthrough from prerequisites to cleanup.
 
 ### Example 1: a public image
+=======
+## Quick start
+
+This example runs Docker Hub's `hello-world` image in a verified confidential VM on Google Cloud.
+
+**[Install](#install) first.** You need the `vcontainer` CLI and a boot image published to your Google Cloud project. The Install section gives a command for every step, from installing `rustup` to `vcontainer publish`.
+
+A session is one VM, and each boot of it runs one container. You start a session, deploy one container into it, and remove the session when you are done. Every example in this README follows that order.
+>>>>>>> 89b711f6842958daf4572c1ad3f62d4328de7694
 
 For setup and more container options, follow [Deploy a container](docs/deploy-a-container.md).
 
@@ -190,57 +213,310 @@ vcontainer logs --session demo
 
 Remove the session. The VM bills until you do, even after its container exits:
 
-```sh
+```shx^
 vcontainer rm --session demo
 ```
 
-### Example 2: a public agent with an API key
+Next, [run an agent that reviews a pull request](#more-examples).
 
-Docker's [docker-agent](https://docs.docker.com/ai/docker-agent/) image runs an LLM agent and serves it as an OpenAI-compatible chat API. Nothing needs to be built: the image comes from Docker Hub, and the deploy command below gives it a small agent configuration that uses an OpenRouter model.
+## Install
 
-Save your OpenRouter API key in a file named `openrouter.key` that holds only the key. Then make a random access token for your chat clients; the agent answers only requests that carry it:
+The full install needs Linux on x86-64, because the boot image is built there. The CLI also runs on macOS, Apple Silicon or Intel; CI builds and tests it on both Macs. To use a Mac, see [Using a Mac](#using-a-mac) at the end of this section.
 
-```sh
-openssl rand -hex 16 > chat.key
-```
+Each block below is one command, so you can copy and run them one at a time.
 
-Start a session:
+### 1. Install the tools
 
-```sh
-vcontainer run --session chat
-```
+| Tool | Used for |
+|---|---|
+| `rustup`, a C compiler and `git` | building the `vcontainer` CLI |
+| Docker | building the boot image, and your own container images |
+| `gcloud` | everything the CLI does in Google Cloud |
 
-Deploy the agent with both keys as secrets. The command after `--` writes the agent configuration, reads the two secrets from `/run/secrets`, and starts the chat server on port 8080:
-
-```sh
-vcontainer deploy --session chat docker.io/docker/docker-agent:latest -p 8080 --secret OPENROUTER_API_KEY=@openrouter.key --secret CHAT_TOKEN=@chat.key -e TELEMETRY_ENABLED=false --entrypoint sh -- -c 'printf "agents:\n  root:\n    model: openrouter/openai/gpt-4o-mini\n    instruction: You are a helpful assistant.\n" > /tmp/agent.yaml && OPENROUTER_API_KEY=$(cat /run/secrets/OPENROUTER_API_KEY) CHAT_TOKEN=$(cat /run/secrets/CHAT_TOKEN) exec /docker-agent serve chat /tmp/agent.yaml --listen 0.0.0.0:8080 --api-key-env CHAT_TOKEN'
-```
-
-The agent configuration and the command are part of the measured launch, so `vcontainer verify` shows them; the two keys are not. Set `IP` to the address that `vcontainer deploy` printed (the one below is only an example):
+**A C compiler, `git` and `curl`.** Some of the CLI's cryptography crates include C code. On Debian or Ubuntu:
 
 ```sh
-IP=203.0.113.7
+sudo apt update && sudo apt install -y build-essential ca-certificates curl git gnupg
 ```
 
-Ask the agent a question with your access token. Without the token it answers `401`:
+On macOS, install the Xcode Command Line Tools, which include `clang` and `git`:
 
 ```sh
-curl "http://$IP:8080/v1/chat/completions" -H "Authorization: Bearer $(cat chat.key)" -H "Content-Type: application/json" -d '{"model":"root","messages":[{"role":"user","content":"Reply with exactly: vContainer works"}]}'
+xcode-select --install
 ```
 
-The token keeps others from using your key, but the traffic is plain HTTP, so the host can read it (see [Trust](#trust)). Remove the session when you are done:
+**Rust.** Install `rustup`. The repository pins Rust 1.95.0 in `rust-toolchain.toml`, and `rustup` downloads that version the first time you build:
 
 ```sh
-vcontainer rm --session chat
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ```
 
-### Example 3: your own agent image, with an API key
+Load `cargo` into the current terminal. New terminals load it automatically:
 
-Follow [Deploy your own agent](docs/deploy-your-agent.md) for the complete path from a Dockerfile to a verified deployment, including registry setup, secret delivery, updates, and cleanup.
+```sh
+. "$HOME/.cargo/env"
+```
 
-For a working application you can adapt, follow [Deploy an OpenRouter agent](docs/deploy-an-openrouter-agent.md). The included demo reads its API key from `/run/secrets/OPENROUTER_API_KEY` and serves `POST /chat` through OpenRouter.
+**Docker.** On Debian or Ubuntu:
 
-### Command reference
+```sh
+sudo apt install -y docker.io docker-buildx
+```
+
+The build script runs Docker as your user, so add yourself to the `docker` group. Then log out and back in for the change to take effect:
+
+```sh
+sudo usermod -aG docker "$USER"
+```
+
+On other Linux distributions, follow Docker's [install guide](https://docs.docker.com/engine/install/).
+
+**gcloud.** On Debian or Ubuntu, add Google's package signing key:
+
+```sh
+curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+```
+
+Add Google's package repository:
+
+```sh
+echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list
+```
+
+Install the Google Cloud CLI:
+
+```sh
+sudo apt update && sudo apt install -y google-cloud-cli
+```
+
+On macOS, with [Homebrew](https://brew.sh):
+
+```sh
+brew install --cask gcloud-cli
+```
+
+On other systems, follow Google's [install guide](https://cloud.google.com/sdk/docs/install).
+
+### 2. Set up Google Cloud
+
+You need a Google Cloud project with billing enabled and quota for C3 machines in your zone. The default session is a `c3-standard-4` in `us-central1-a`, which uses 4 C3 CPUs.
+
+Log in:
+
+```sh
+gcloud auth login
+```
+
+Set your project. Replace `PROJECT` with its ID:
+
+```sh
+gcloud config set project PROJECT
+```
+
+Enable the Compute Engine API:
+
+```sh
+gcloud services enable compute.googleapis.com
+```
+
+### 3. Build and publish vContainer
+
+Get the code:
+
+```sh
+git clone https://github.com/Mengyuan-L/vContainer && cd vContainer
+```
+
+Install the `vcontainer` CLI:
+
+```sh
+cargo install --locked --path crates/cli
+```
+
+Build `/init` and the kernel in a pinned build container. The result is `out/BOOTX64.EFI` and `out/disk.raw`. The first build downloads the kernel source and the build container's packages:
+
+```sh
+scripts/build-image.sh
+```
+
+Create the GCE image in your project and record its expected measurements:
+
+```sh
+vcontainer publish
+```
+
+You are ready for the [Quick start](#quick-start).
+
+You build and publish the boot image once. It is the same verified image for every container you run: the container image is pulled and measured only when you deploy it, so a new or changed agent image never needs a new boot image. Rebuild only when vContainer itself changes.
+
+`scripts/build-image.sh` refuses a checkout with uncommitted changes; pass `--dev` while hacking. Anyone can rebuild a release byte for byte from its commit, which `vcontainer publish` records and `vcontainer verify` prints. To see the expected measurements without publishing, run `vcontainer measure`.
+
+Your owner key and session files live in `~/.config/vcontainer`. The key is created on first use.
+
+### Using a Mac
+
+Build and publish the boot image on a Linux machine, as above. On the Mac, install the C compiler, Rust and `gcloud` from step 1, do step 2, then clone the code and install the CLI from step 3. Last, copy `~/.config/vcontainer/release.json` from the Linux machine to the same path on the Mac.
+
+The examples deploy a published image, so they need no Docker. To build your own container images on a Mac, as in the review agent's [Build your own image](examples/pr-review-agent/README.md#build-your-own-image), you also need Docker Desktop.
+
+## More examples
+
+### An agent with tools: review a pull request
+
+The [pull request review agent](examples/pr-review-agent) works through tools. It reviews one GitHub pull request at one commit: the model reads the diff and other text files of the repository, including unchanged ones, through five tools, with no shell, and finishes with a review. Its image is on Docker Hub, so nothing needs to be built. Here it reviews [pull request #1](https://github.com/haoxxu/vContainer-review-demo/pull/1) of a small demo repository, which adds a function with three deliberate bugs.
+
+Save your OpenRouter API key in a file named `openrouter.key` that holds only the key. Then start a session:
+
+```sh
+vcontainer run --session public-review
+```
+
+Deploy the agent, pinned by digest. The pull request and its commit are environment variables, so they are part of the measured launch; if the pull request has moved to another commit, the agent stops without reviewing it. The agent opens no port:
+
+```sh
+vcontainer deploy --session public-review docker.io/terryxhx/pr-review-agent@sha256:fc20c8d1369edacbd77405847d94efdca733df17b883a908d0db29e28865776b -e PR_URL=https://github.com/haoxxu/vContainer-review-demo/pull/1 -e HEAD_SHA=688c61413e4e9bf830a58bab3e344d25582b8a33 --secret OPENROUTER_API_KEY=@openrouter.key
+```
+
+The deploy returns once the container runs, after about 15 seconds. The review takes a minute or two; then verify the session again:
+
+```sh
+vcontainer verify --session public-review
+```
+
+```console
+public-review: VERIFIED
+  ...
+  ✓ launch measured before pull: docker.io/terryxhx/pr-review-agent@sha256:fc20c8d1…
+  ✓ container sealed: manifest sha256:fc20c8d1…
+  state: Exited (exit code 0)
+  container: docker.io/terryxhx/pr-review-agent@sha256:fc20c8d1… env=["PR_URL=https://github.com/haoxxu/vContainer-review-demo/pull/1", "HEAD_SHA=688c61413e4e9bf830a58bab3e344d25582b8a33"] secrets={"OPENROUTER_API_KEY"}
+```
+
+The evidence names the agent's image, the pull request and the commit, and the exit code is part of the quote. Read the review from the serial console; `sed` skips the boot messages before it:
+
+```sh
+vcontainer logs --session public-review | sed -n '/^pr-review-agent:/,$p'
+```
+
+```console
+pr-review-agent: haoxxu/vContainer-review-demo#1 at 688c61413e4e, model anthropic/claude-sonnet-5.5
+  tool get_diff {"path": "notes/listing.py"}
+  tool list_dir {"path": "notes"}
+  tool read_file {"path": "notes/cache.py"}
+  tool read_file {"path": "notes/db.py"}
+  tool get_diff {"path": "notes/__init__.py"}
+
+review of haoxxu/vContainer-review-demo#1 at 688c61413e4e: 4 comments
+
+The new `list_notes` has four defects. Two of them make it wrong on every call, and one is a SQL injection. I read the diff and `notes/cache.py` and `notes/db.py`. I did not run the code.
+
+notes/listing.py:16
+  `Cache.get` raises KeyError on a miss or an expired entry. It never returns None, as its docstring in cache.py says. So the first call for any key raises KeyError and `list_notes` never reaches the database. Wrap the lookup in try/except KeyError and fall through to the query.
+...
+tokens: 9651 prompt, 1067 completion
+vcontainer: container exited with 0
+```
+
+In this run the agent found the three planted bugs and further problems with the cache. It found the cache bug by reading `notes/cache.py`, a file the pull request does not change. The review varies from run to run.
+
+The OpenRouter key is sealed to the VM, and the model never sees it: the agent calls OpenRouter itself and gives the model only its tools. Everything else here is public: the repository, the launch and the review on the serial console. OpenRouter and the model's provider see the code under review. Remove the session when you are done:
+
+```sh
+vcontainer rm --session public-review
+```
+
+### Review a private pull request
+
+The same agent can review a pull request in a private repository and post the review there, while the host sees neither the code the agent reads, the token nor the review. You copy the demo repository into a private one, give the agent a GitHub token for that repository only, and keep the container's output off the serial console. The demo's code is public anyway; with your own private repository, the same steps keep its code from the host.
+
+This example also uses the [GitHub CLI](https://cli.github.com), `gh`, signed in with `gh auth login` to the account that will own the copy.
+
+Copy the demo repository, with its history, into a new private repository named `review-demo`. "Use this template" does not work here: the branches of a template copy have unrelated histories, so GitHub cannot open a pull request between them. Create the empty repository:
+
+```sh
+gh repo create review-demo --private
+```
+
+Let `git` push to GitHub over HTTPS with your `gh` login (once per machine). If you push over SSH instead, skip this and push to `git@github.com:OWNER/review-demo.git` below:
+
+```sh
+gh auth setup-git
+```
+
+Clone the demo repository without a working tree:
+
+```sh
+git clone --bare https://github.com/haoxxu/vContainer-review-demo.git
+```
+
+Push every branch to your copy. Replace `OWNER` with your GitHub account, here and below:
+
+```sh
+git -C vContainer-review-demo.git push --mirror https://github.com/OWNER/review-demo.git
+```
+
+Open the pull request in your copy:
+
+```sh
+gh pr create --repo OWNER/review-demo --base main --head feat/list-notes --title "feat: add paginated note listing" --body "Adds list_notes, which lists the notes of one owner, a page at a time."
+```
+
+Create a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) for this repository only. Under **Repository access**, choose **Only select repositories** and `review-demo`. Under **Permissions**, give **Contents** read-only and **Pull requests** read and write. Save the token in a file named `github.key` that holds only the token. Then start a session:
+
+```sh
+vcontainer run --session private-review
+```
+
+Deploy the same image as in the previous example. The copy keeps the demo's commits, so `HEAD_SHA` does not change. With `GITHUB_TOKEN`, the agent posts its review to the pull request and prints nothing of the repository, and `--quiet` keeps even that off the serial console:
+
+```sh
+vcontainer deploy --session private-review docker.io/terryxhx/pr-review-agent@sha256:fc20c8d1369edacbd77405847d94efdca733df17b883a908d0db29e28865776b -e PR_URL=https://github.com/OWNER/review-demo/pull/1 -e HEAD_SHA=688c61413e4e9bf830a58bab3e344d25582b8a33 --secret OPENROUTER_API_KEY=@openrouter.key --secret GITHUB_TOKEN=@github.key --quiet
+```
+
+After a minute or two, verify the session:
+
+```sh
+vcontainer verify --session private-review
+```
+
+```console
+private-review: VERIFIED
+  ...
+  state: Exited (exit code 0)
+  container: docker.io/terryxhx/pr-review-agent@sha256:fc20c8d1… env=["PR_URL=https://github.com/OWNER/review-demo/pull/1", "HEAD_SHA=688c61413e4e9bf830a58bab3e344d25582b8a33"] secrets={"GITHUB_TOKEN", "OPENROUTER_API_KEY"}
+```
+
+Both secret names are part of the evidence, so whoever checks the session can see that the agent had a GitHub token. The serial console shows the container start and exit, and nothing in between:
+
+```sh
+vcontainer logs --session private-review | tail -n 2
+```
+
+```console
+vcontainer: container started: python3 -u /app/agent.py
+vcontainer: container exited with 0
+```
+
+Open the pull request to read the review. It is a comment review of commit `688c6141`, posted by the account that owns the token, with inline comments on the lines it discusses:
+
+```sh
+gh pr view 1 --repo OWNER/review-demo --web
+```
+
+What this run keeps from whom:
+
+- The host cannot read the code the agent reads, the token or the review. The token is sealed to the VM, the agent keeps the code in the VM's encrypted memory, its traffic to GitHub and OpenRouter is HTTPS, the container's output stays off the serial console, and the VM has no SSH or exec.
+- The launch is public: the image, the commit and `PR_URL`, which names your repository.
+- GitHub, OpenRouter and the model's provider see the code. So does anything your GitHub settings let read the repository, such as an app or automatic Copilot code review; vContainer does not change those settings. The host sees which servers the VM connects to and how much data it exchanges with them.
+- The image is the one we publish, pinned by digest. `vcontainer verify` shows which image ran, but not that it was built from [examples/pr-review-agent](examples/pr-review-agent), so you trust its publisher. To run your own build, follow [Build your own image](examples/pr-review-agent/README.md#build-your-own-image) and deploy that reference instead.
+
+Remove the session when you are done. The token and the private repository stay until you delete them on GitHub:
+
+```sh
+vcontainer rm --session private-review
+```
+
+## Command reference
 
 **`vcontainer run --session NAME`** creates a VM, or reconnects to an existing one, and verifies it. Options:
 
@@ -263,13 +539,13 @@ For a working application you can adapt, follow [Deploy an OpenRouter agent](doc
 **`vcontainer verify --session NAME`** verifies a session again at any time. `--export-policy FILE` also writes what a third party needs: the expected measurements, your public key, the instance and the exact launch, but no secrets:
 
 ```sh
-vcontainer verify --session agent --export-policy agent-policy.json
+vcontainer verify --session public-review --export-policy review-policy.json
 ```
 
 With that file and the session's address in `IP`, anyone who can reach port 7700 verifies the session, without your key or your cloud account:
 
 ```sh
-vcontainer verify --url "http://$IP:7700" --policy agent-policy.json
+vcontainer verify --url "http://$IP:7700" --policy review-policy.json
 ```
 
 **`vcontainer logs --session NAME`** prints the serial console: kernel, `/init` and container output. **`vcontainer ls`** lists your sessions and what each one runs. **`vcontainer rm --session NAME`** deletes the VM and its firewall rule.
@@ -291,7 +567,7 @@ Only secret values and the registry token are encrypted, and the container itsel
 
 - the launch configuration (image, command, environment variables and secret names), which anyone can read from the ledger;
 - container output, which goes to the host-readable serial console unless you pass `--quiet`;
-- traffic to the container's ports, which vContainer does not encrypt. The agents in the examples serve plain HTTP. To protect this traffic, have the container serve TLS with a key passed through `--secret`, and publish the key's fingerprint with `-e` so clients can check it against the verified evidence.
+- traffic to the container's ports, which vContainer does not encrypt. To protect this traffic, have the container serve TLS with a key passed through `--secret`, and publish the key's fingerprint with `-e` so clients can check it against the verified evidence.
 
 ## Status
 

@@ -54,13 +54,10 @@ Build an image with the probe as `/init`:
 scripts/build-image.sh --dev --init "$(tools/tdx-probe/build.sh)"
 ```
 
-Set your own project and existing bucket, then boot real TDX VMs and collect
-their serial logs. This creates billable resources; the script deletes its VMs
-and image afterwards, but retains the uploaded object. Choose a zone with C3
-quota:
+Boot it on real TDX VMs and collect their serial logs (the script deletes the VMs afterwards). Replace `PROJECT` with your project ID and `BUCKET` with a Cloud Storage bucket in it:
 
 ```sh
-PROJECT=YOUR_PROJECT BUCKET=YOUR_BUCKET ZONE=us-central1-a tools/tdx-probe/gce-run.sh c3-standard-4 c3-standard-8
+PROJECT=PROJECT BUCKET=BUCKET tools/tdx-probe/gce-run.sh c3-standard-4 c3-standard-8
 ```
 
 Check the offline RTMR1 prediction against a probe log:
@@ -96,8 +93,8 @@ before publishing an image for application use.
 
 Image `vcontainer-probe-20261016-035500` (and `-040829`, the same bytes);
 `--no-shielded-secure-boot --shielded-vtpm`, no Secure Boot keys declared on the
-image. Logs: `out/probe-serial.log` (= c3-standard-4), `out/probe-serial-c3-standard-8.log`,
-`out/probe-attempt1-nopv-BUG.log` (first attempt, unpatched kernel).
+image. The serial logs were saved to the gitignored `out/` and are not in this
+repository.
 
 | Check | c3-standard-4 | c3-standard-8 |
 |---|---|---|
@@ -121,7 +118,7 @@ image. Logs: `out/probe-serial.log` (= c3-standard-4), `out/probe-serial-c3-stan
 | Routes | host route `10.128.0.1/32 dev eth0` added; default route already existed (EEXIST), see Surprises #2 | same |
 | Metadata (`instance/id`, `project/numeric-project-id`, `instance/zone`) | HTTP 200 ×3 | HTTP 200 ×3 |
 | Internet | TCP 1.1.1.1:80 connected; DNS + `http://connectivitycheck.gstatic.com/generate_204` → 204 | same |
-| `/proc/net/pnp` | `#PROTO: DHCP`, `domain us-central1-a.c.agentlockbox.internal.`, `nameserver 169.254.169.254`, `bootserver 10.128.0.1` | same |
+| `/proc/net/pnp` | `#PROTO: DHCP`, `domain us-central1-a.c.PROJECT.internal.`, `nameserver 169.254.169.254`, `bootserver 10.128.0.1` | same |
 | DHCP MTU | 1460 (option 26, applied by IP_PNP) | same |
 | `lo` | UP (`flags=0x9`, operstate `unknown`) | UP |
 
@@ -170,8 +167,8 @@ depends only on the image (AlternateLBA 2097151 for the 1 GiB image even on the
 ### RTMR0 (for reference; not pinned)
 
 MR index 1, 14 measured events: `EV_EFI_HANDOFF_TABLES2 "TdxTable"` (TD HOB;
-c3-standard-4 `d587edd1…`, c3-standard-8 `39e89cd8…`, the values FACTS-tdx.md
-predicted), `EV_EFI_PLATFORM_FIRMWARE_BLOB2 Fv(48DB5E17…)` (CFV `4e1221cf…`),
+c3-standard-4 `d587edd1…`, c3-standard-8 `39e89cd8…`, the values predicted
+before the first boot), `EV_EFI_PLATFORM_FIRMWARE_BLOB2 Fv(48DB5E17…)` (CFV `4e1221cf…`),
 5× `EV_EFI_VARIABLE_DRIVER_CONFIG` (SecureBoot=0 `cfa4e2c6…`, PK 806 B, KEK
 3066 B, db 6133 B, dbx 11936 B: GCE's default keys, because the image declares
 none), `EV_SEPARATOR`, 3× `EV_PLATFORM_CONFIG_FLAGS "ACPI DATA"` (c3-standard-4
@@ -184,14 +181,13 @@ Boot0001 `a25333c7…` ("UEFI nvme_card-pd"), Boot0000 `23ada07f…`. No
 ## Surprises
 
 1. **`nopv` breaks TDX boot on stock 6.18.57.** The first boot (no patch) hit
-   `Kernel BUG at setup_IO_APIC+0x7f` and looped (`panic=-1`), see
-   `out/probe-attempt1-nopv-BUG.log`. A TD has a locked x2APIC and no IRQ
+   `Kernel BUG at setup_IO_APIC+0x7f` and looped (`panic=-1`). A TD has a locked x2APIC and no IRQ
    remapping; Linux accepts that only through `x86_init.hyper.x2apic_available()`,
    which only the KVM (or VMware/Hyper-V/…) hypervisor hook provides. With
    `nopv` (or `KVM_GUEST=n`) no hypervisor is detected, `try_to_enable_x2apic()`
    cannot disable the locked x2APIC, the APIC-ID limit stays at 32767,
    `x86_vector_select()` refuses the IO-APIC, and `BUG_ON(mp_irqdomain_create())`
-   fires. `image/patches/0001-…` (+16 lines in `arch/x86/coco/tdx/tdx.c`) sets
+   fires. A 16-line patch to `arch/x86/coco/tdx/tdx.c` set
    the hook to `true` for TDX guests, which limits APIC IDs to 255 (physical
    x2APIC mode; `APIC: Switched APIC routing to: physical x2apic`). Without
    KVM's MSI extended-destination-ID feature, shapes with APIC IDs ≥ 255 would
@@ -199,7 +195,7 @@ Boot0001 `a25333c7…` ("UEFI nvme_card-pd"), Boot0000 `23ada07f…`. No
    **Decision (2026-10-16):** no kernel patch. The image uses `KVM_GUEST=y`
    without `nopv`: the host's default configuration (like its ACPI tables) is
    trusted, KVM's hook covers large shapes, and TDX keeps the clocksource on
-   `tsc`. The patch and the `nopv` probe logs are kept only in git history.
+   `tsc`. Neither the patch nor the probe logs are in this repository.
 2. **Kernel DHCP and GCE's /32: the default route appears by accident.** IP_PNP
    uses 255.255.255.255 as its "no netmask" sentinel, so GCE's /32 is treated as
    absent: `IP-Config: Guessing netmask 255.0.0.0`. The guessed classful /8 puts

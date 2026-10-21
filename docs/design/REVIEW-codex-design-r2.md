@@ -1,3 +1,7 @@
+# Codex review, round 2 (design v0.2)
+
+> Historical review of design v0.2. Its section numbers mostly match the current [DESIGN.md](DESIGN.md) (v0.3), which includes the fixes. [../whitepaper.md](../whitepaper.md) describes what vContainer actually implements.
+
 ## C1-C14 status
 
 - **C1 — Fixed:** helper execution and coredumps are disabled; procfs controls, capability sets and inherited descriptors are constrained.
@@ -19,7 +23,7 @@
 
 1. **High — §§4.1, 10: kernel configuration enforcement is incorrect.** `merge_config.sh -s` rejects intentional redefinitions—including enabling options over an allnoconfig base—but only warns about requested/effective mismatches. **Fix:** generate from a complete miniconfig and independently assert required-on/off values. Explicitly include `TCG_SVSM` for SVSM; when generating with `EXPERT=y` from the outset, include essentials such as `SHMEM` and `MULTIUSER`. [Linux merge script](https://raw.githubusercontent.com/torvalds/linux/v6.18/scripts/kconfig/merge_config.sh)
 
-2. **High — §9.2.1: TCB acceptance policy disappeared.** Unlike v0.1, v0.2 does not require acceptable statuses/advisories. The selected library’s one-shot `verify()` skips those policy checks. **Fix:** require explicit policy validation, trusted verifier time and collateral freshness. Also treat `min_tcb_eval_num` as a minimum: permanently requesting that exact version eventually receives HTTP 410. [Exact library source](/home/huasheng/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/dcap-qvl-0.7.0/src/verify.rs:377), [Intel PCS rules](https://api.portal.trustedservices.intel.com/content/documentation.html)
+2. **High — §9.2.1: TCB acceptance policy disappeared.** Unlike v0.1, v0.2 does not require acceptable statuses/advisories. The selected library’s one-shot `verify()` skips those policy checks. **Fix:** require explicit policy validation, trusted verifier time and collateral freshness. Also treat `min_tcb_eval_num` as a minimum: permanently requesting that exact version eventually receives HTTP 410. [Exact library source](https://docs.rs/crate/dcap-qvl/0.7.0/source/src/verify.rs#377), [Intel PCS rules](https://api.portal.trustedservices.intel.com/content/documentation.html)
 
 3. **High — §6.5: the exec handshake can falsely authenticate RUNNING.** `close_range(3, ~0)` closes a precreated handshake descriptor. Even if preserved, EOF also follows child death; Linux closes CLOEXEC descriptors before all fallible exec work finishes. **Fix:** preserve the error channel, cover setup failures, coordinate reaping, and use an actual successful-exec observation—or weaken the status claim. [Linux 6.18 exec implementation](https://raw.githubusercontent.com/torvalds/linux/v6.18/fs/exec.c)
 

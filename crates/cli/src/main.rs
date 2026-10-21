@@ -112,7 +112,7 @@ struct LaunchArgs {
     /// to the verified VM and mounted at /run/secrets/NAME.
     #[arg(long = "secret")]
     secrets: Vec<String>,
-    /// Container port to open to --allow-from.
+    /// Container port to open to the session's --allow-from range (set by `vcontainer run`).
     #[arg(short, long = "port")]
     ports: Vec<u16>,
     #[arg(long)]

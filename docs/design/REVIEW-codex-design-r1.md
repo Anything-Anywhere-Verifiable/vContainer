@@ -1,3 +1,7 @@
+# Codex review, round 1 (design v0.1)
+
+> Historical review of design v0.1, which is not included in this repository. Section (§), D and G numbers refer to v0.1 and may not match the current [DESIGN.md](DESIGN.md) (v0.3). [REVIEW.md](REVIEW.md) refers to these findings as C1–C14. [../whitepaper.md](../whitepaper.md) describes what vContainer actually implements.
+
 ## Verdict
 
 The single-PE TDX architecture is a reasonable foundation, but this design does **not yet establish requirement 3**. The largest gaps are unaudited ACPI enrollment, missing SNP PCR1 appraisal, incomplete SVSM key binding, and a concrete escape from D7 through writable procfs. GA SNP honestly acknowledges its weaker root, but trusting Google’s host-managed vTPM is an exception to the original malicious-host requirement. The owner signature and per-boot HPKE binding are sound in principle; the proposed implementation and operational budgets are substantially too optimistic.
@@ -12,7 +16,7 @@ The single-PE TDX architecture is a reasonable foundation, but this design does 
 
 2. **[High] SNP measures ACPI into PCR1 but never appraises it.**  
    **Where:** §4.3 PCR rules; §9.3; §11 “SNP needs no golden.”  
-   **Problem:** Quoting and replaying PCR1 authenticates its contents without deciding whether they are acceptable. The [research notes](/home/huasheng/tdrun-design/FACTS-snp.md:99) identify three platform-configuration events followed by boot variables; the underlying SNP log labels those events `ACPI DATA`.  
+   **Problem:** Quoting and replaying PCR1 authenticates its contents without deciding whether they are acceptable. The design study's SNP research notes (not included in this repository) identify three platform-configuration events followed by boot variables; the underlying SNP log labels those events `ACPI DATA`.  
    **Scenario:** Host-provided malicious AML executes before `/init`, while PCR4 still identifies the expected PE. The changed PCR1 passes replay, and all appraised PCRs can remain acceptable. An SVSM-backed TPM does not fix this omission.  
    **Recommended fix:** Add PCR1 ACPI allowlists and boot-variable constraints equivalent to TDX’s RTMR0 policy. Confirm their measurement coverage under SVSM. Remove the “no golden” and unconditional TDX-equivalence claims.
 

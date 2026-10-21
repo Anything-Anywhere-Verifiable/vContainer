@@ -9,7 +9,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::PathBuf;
 use vcontainer_core::crypto::{self, SigningKey};
 
-/// Expected measurements of a published boot image (from `vcontainer measure`).
+/// A published boot image and its expected measurements (written by `vcontainer publish`).
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Release {
     /// GCE image name and the project it lives in.
