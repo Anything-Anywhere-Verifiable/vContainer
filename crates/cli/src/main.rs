@@ -10,6 +10,7 @@ mod endorse;
 mod gcp;
 mod measure;
 mod state;
+mod terminal;
 mod verify;
 
 use anyhow::{bail, ensure, Context, Result};
@@ -31,6 +32,9 @@ const MIN_FW_SVN: u64 = 2;
 #[derive(Parser)]
 #[command(name = "vcontainer", version, about = "Run containers in verified Intel TDX confidential VMs on Google Cloud")]
 struct Cli {
+    /// Include all verification claims and release metadata in the receipt.
+    #[arg(long, global = true)]
+    details: bool,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -133,9 +137,9 @@ struct LaunchArgs {
 fn main() {
     let cli = Cli::parse();
     let result = match cli.cmd {
-        Cmd::Run { session, zone, machine_type, allow_from } => run(&session, &zone, &machine_type, allow_from),
-        Cmd::Deploy { session, resume, launch } => deploy(&session, (!resume).then_some(launch)),
-        Cmd::Verify { session, url, policy, export_policy } => verify_cmd(session, url, policy, export_policy),
+        Cmd::Run { session, zone, machine_type, allow_from } => run(&session, &zone, &machine_type, allow_from, cli.details),
+        Cmd::Deploy { session, resume, launch } => deploy(&session, (!resume).then_some(launch), cli.details),
+        Cmd::Verify { session, url, policy, export_policy } => verify_cmd(session, url, policy, export_policy, cli.details),
         Cmd::Ls => ls(),
         Cmd::Logs { session } => logs(&session),
         Cmd::Rm { session } => rm(&session),
@@ -143,12 +147,16 @@ fn main() {
         Cmd::Publish { dir, bucket } => publish(&dir, bucket),
     };
     if let Err(e) = result {
-        eprintln!("error: {e:#}");
+        use std::io::IsTerminal;
+        if std::io::stderr().is_terminal() && !cli.details {
+            eprintln!("error: {e}");
+            eprintln!("  Use --details to include the full verification error and event log.");
+        } else { eprintln!("error: {e:#}"); }
         std::process::exit(1);
     }
 }
 
-fn run(name: &str, zone: &str, machine_type: &str, allow_from: Option<String>) -> Result<()> {
+fn run(name: &str, zone: &str, machine_type: &str, allow_from: Option<String>, details: bool) -> Result<()> {
     let prev = state::find_session(name)?;
     let owner = crypto::owner_metadata(&state::owner_key()?);
     let source = match (allow_from, &prev) {
@@ -184,26 +192,27 @@ fn run(name: &str, zone: &str, machine_type: &str, allow_from: Option<String>) -
     let mut s = Session { name: name.into(), project, zone, ip: inst.ip().context("instance has no external IP")?, source, ports, policy };
     state::save_session(&s)?; // so `rm` works even if verification fails
     let wait = format!("waiting for {} to boot and answer attestation", s.url());
-    let v = anim::step(Kind::Verify, &wait, |_| format!("{name} booted and passed verification"), || wait_verified(&s, Duration::from_secs(300)))?;
+    let (ev, nonce) = anim::step(Kind::Verify, &wait, |_| format!("{name} returned attestation evidence"), || wait_evidence(&s, Duration::from_secs(300)))?;
+    let v = terminal::verify(&format!("session {name} / {} / {}", s.ip, s.zone), &ev, &nonce, &s.policy)?;
     if v.status.state == State::Waiting {
         // A fresh boot: whatever was launched before is gone.
         s.policy.launch = None;
         s.ports.clear();
         state::save_session(&s)?;
     }
-    report(&format!("session {name} ({}, {})", s.ip, s.zone), &v);
+    report(&format!("session {name} ({}, {})", s.ip, s.zone), &v, &s.policy, details);
     if v.status.state == State::Waiting {
         println!("\nsession {name} is ready. Deploy a container:\n  vcontainer deploy --session {name} IMAGE [-p PORT] [--secret NAME=@FILE]");
     }
     Ok(())
 }
 
-fn wait_verified(s: &Session, timeout: Duration) -> Result<verify::Verified> {
+fn wait_evidence(s: &Session, timeout: Duration) -> Result<(Evidence, [u8; 32])> {
     let start = Instant::now();
     for i in 0.. {
         let nonce = verify::nonce();
         let last = match verify::fetch_evidence(&s.url(), &nonce) {
-            Ok(ev) => return verify::verify(&ev, &nonce, &s.policy),
+            Ok(ev) => return Ok((ev, nonce)),
             Err(e) => format!("{e:#}"),
         };
         if i % 6 == 5 {
@@ -228,7 +237,11 @@ fn serial_tail(s: &Session) -> String {
     lines[lines.len().saturating_sub(25)..].iter().map(|l| verify::untrusted(l.as_bytes())).collect::<Vec<_>>().join("\n")
 }
 
-fn report(label: &str, v: &verify::Verified) {
+fn report(label: &str, v: &verify::Verified, policy: &Policy, details: bool) {
+    use std::io::IsTerminal;
+    if std::io::stdout().is_terminal() || details { terminal::receipt(v, policy, details); }
+    // Keep the existing complete stdout report for redirected/scripted use.
+    if std::io::stdout().is_terminal() { return; }
     println!("{label}: VERIFIED");
     for c in &v.claims {
         println!("  ✓ {c}");
@@ -265,13 +278,12 @@ fn now() -> u64 {
 }
 
 /// Sends `args` as a new launch, or with None resumes the saved one.
-fn deploy(name: &str, args: Option<LaunchArgs>) -> Result<()> {
+fn deploy(name: &str, args: Option<LaunchArgs>, details: bool) -> Result<()> {
     let mut s = state::load_session(name)?;
     let owner = state::owner_key()?;
-    let v = anim::step(Kind::Verify, &format!("verifying session {name}"), |_| format!("session {name} passed verification"), || {
-        let nonce = verify::nonce();
-        verify::verify(&verify::fetch_evidence(&s.url(), &nonce)?, &nonce, &s.policy)
-    })?;
+    terminal::gate("The VM must match your policy before it receives the signed launch.");
+    let v = verify_endpoint(&format!("{name} / before launch"), &s.url(), &s.policy)
+        .context("deployment stopped before launch; no owner commit was sent")?;
     let image = v.config.as_ref().map_or("?", |c| c.image.as_str());
     let payload = match (v.status.state, args) {
         (State::Waiting, Some(args)) => anim::step(
@@ -297,23 +309,20 @@ fn deploy(name: &str, args: Option<LaunchArgs>) -> Result<()> {
 
     // Commit only after seeing this launch measured, before any pull: verify()
     // returns a config only if ledger event 2 is s.policy.launch, i.e. `payload`.
-    anim::step(Kind::Verify, "verifying that the VM measured this launch", |_| "the VM measured exactly this launch".into(), || {
-        let n = verify::nonce();
-        let v2 = verify::verify(&verify::fetch_evidence(&s.url(), &n)?, &n, &s.policy)?;
-        ensure!(
-            v2.status.state == State::Starting && v2.boot == v.boot && v2.config.is_some(),
-            "the session did not measure our launch (state {:?})",
-            v2.status.state
-        );
-        Ok(())
-    })?;
+    let v2 = verify_endpoint(&format!("{name} / launch recorded, pull not authorized"), &s.url(), &s.policy)?;
+    ensure!(
+        v2.status.state == State::Starting && v2.boot == v.boot && v2.config.is_some(),
+        "the session did not measure our launch (state {:?})",
+        v2.status.state
+    );
+    terminal::gate("Recorded launch matches. The owner can now authorize the image pull.");
     anim::step(Kind::Sign, "opening the ports and signing the commit", |_| "committed: the VM may pull the image".into(), || {
         gcp::ensure_firewall(&s.project, name, &s.ports, &s.source)?;
         let commit = CommitRequest { sig: crypto::sign(&owner, &owner_message("commit", &v.boot, &payload)) };
         verify::post(&s.url(), "/v1/commit", &commit)
     })?;
 
-    let v = anim::step(Kind::Container, "the VM is pulling and starting the container", |v: &verify::Verified| format!("container {:?}", v.status.state), || {
+    let (ev, nonce) = anim::step(Kind::Container, "the VM is pulling and starting the container", |_| "container settled; checking final attestation".into(), || {
         let start = Instant::now();
         loop {
             std::thread::sleep(Duration::from_secs(3));
@@ -328,11 +337,12 @@ fn deploy(name: &str, args: Option<LaunchArgs>) -> Result<()> {
                 bail!("the VM restarted during the pull; run `vcontainer run --session {name}` and deploy again");
             }
             if matches!(st.state, State::Running | State::Exited | State::Failed) {
-                return verify::verify(&ev, &n, &s.policy);
+                return Ok((ev, n));
             }
         }
     })?;
-    report(&format!("session {name} ({}, {})", s.ip, s.zone), &v);
+    let v = terminal::verify(&format!("{name} / final state"), &ev, &nonce, &s.policy)?;
+    report(&format!("session {name} ({}, {})", s.ip, s.zone), &v, &s.policy, details);
     match (v.status.state, v.status.exit_code) {
         (State::Failed, _) => bail!("the container did not start; see `vcontainer logs --session {name}`"),
         (State::Exited, Some(c)) if c != 0 => bail!("the container exited with {c}; see `vcontainer logs --session {name}`"),
@@ -381,7 +391,13 @@ fn launch(s: &mut Session, owner: &crypto::SigningKey, boot: &BootInfo, args: La
     Ok(payload)
 }
 
-fn verify_cmd(session: Option<String>, url: Option<String>, policy: Option<PathBuf>, export: Option<PathBuf>) -> Result<()> {
+fn verify_endpoint(label: &str, url: &str, policy: &Policy) -> Result<verify::Verified> {
+    let nonce = verify::nonce();
+    let ev = anim::step(Kind::Verify, "requesting a fresh attestation quote", |_| "fresh evidence received".into(), || verify::fetch_evidence(url, &nonce))?;
+    terminal::verify(label, &ev, &nonce, policy)
+}
+
+fn verify_cmd(session: Option<String>, url: Option<String>, policy: Option<PathBuf>, export: Option<PathBuf>, details: bool) -> Result<()> {
     let (url, policy, label) = match (session, url, policy) {
         (Some(name), None, None) => {
             let s = state::load_session(&name)?;
@@ -390,14 +406,11 @@ fn verify_cmd(session: Option<String>, url: Option<String>, policy: Option<PathB
         (None, Some(url), Some(p)) => (url.clone(), serde_json::from_slice(&std::fs::read(&p)?)?, url),
         _ => bail!("use --session NAME, or --url URL --policy FILE"),
     };
-    let v = anim::step(Kind::Verify, &format!("verifying {label}"), |_| format!("{label} passed verification"), || {
-        let n = verify::nonce();
-        verify::verify(&verify::fetch_evidence(&url, &n)?, &n, &policy)
-    })?;
+    let v = verify_endpoint(&label, &url, &policy)?;
     if policy.launch.is_some() && v.config.is_none() {
         bail!("the policy's launch is not measured (state {:?}): the VM restarted or the deploy never reached it", v.status.state);
     }
-    report(&label, &v);
+    report(&label, &v, &policy, details);
     if let Some(path) = export {
         std::fs::write(&path, serde_json::to_vec_pretty(&policy)?)?;
         println!("policy written to {} (give it to anyone who should verify this session)", path.display());

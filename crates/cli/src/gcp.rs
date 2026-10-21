@@ -75,7 +75,6 @@ pub fn instance(project: &str, name: &str, zone: &str) -> Result<Option<Instance
 pub fn ensure_network(project: &str) -> Result<()> {
     let p = format!("--project={project}");
     if describe(&["compute", "networks", "describe", NETWORK, "--format=value(name)", &p])?.is_none() {
-        eprintln!("creating network {NETWORK}");
         gcloud(&["compute", "networks", "create", NETWORK, "--subnet-mode=auto", &p])?;
     }
     Ok(())

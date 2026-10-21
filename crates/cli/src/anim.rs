@@ -1,135 +1,157 @@
-//! An animated status on stderr while the CLI waits, drawn in plain ASCII.
-//! While a session is verified, a padlock's shackle drops and locks; while
-//! the boot image is uploaded and created, a file fills with lines; other
-//! steps show a one-line spinner. Each step then leaves one `✓` line with its
-//! result and duration. The animation runs only on a terminal large enough
-//! for it (otherwise the one-line spinner, or nothing off a terminal, where
-//! only the result lines are printed).
+//! A quiet single-line activity indicator. Only one ASCII mark and the elapsed
+//! time change; the phase and purpose stay fixed. Non-TTY and dumb terminals
+//! get stable result lines only; NO_COLOR disables styling.
 
 use anyhow::Result;
 use std::io::{IsTerminal, Write};
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, PartialEq)]
-pub enum Kind {
-    Verify,
-    Image,
-    Sign,
-    Container,
-    Wait,
-}
+pub enum Kind { Verify, Image, Sign, Container, Wait }
 
-/// Padlock frames: open, shackle dropping, locked.
-const LOCK: [[&str; 6]; 3] = [
-    ["   .--.   ", "   |  |   ", "   |      ", " .-'----. ", " |  ()  | ", " '------' "],
-    ["          ", "   .--.   ", "   |  |   ", " .-'----. ", " |  ()  | ", " '------' "],
-    ["          ", "   .--.   ", "   |  |   ", " .-'--'-. ", " |  ()  | ", " '------' "],
-];
-/// File frames: lines being written.
-const FILE: [[&str; 6]; 4] = [
-    ["  _____   ", " |     \\  ", " |      | ", " |      | ", " |      | ", " |______| "],
-    ["  _____   ", " |     \\  ", " | ---  | ", " |      | ", " |      | ", " |______| "],
-    ["  _____   ", " |     \\  ", " | ---  | ", " | ---- | ", " |      | ", " |______| "],
-    ["  _____   ", " |     \\  ", " | ---  | ", " | ---- | ", " | --   | ", " |______| "],
-];
-const SPIN: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-const ART_WIDTH: usize = 10;
-
-/// The drawing at tick `i` (100 ms each), with the row the message goes on.
-fn art(kind: Kind, i: usize) -> Option<(&'static [&'static str; 6], usize)> {
-    match kind {
-        // Open for 0.4 s, dropping for 0.2 s, locked for 0.4 s.
-        Kind::Verify => Some((&LOCK[[0, 0, 0, 0, 1, 1, 2, 2, 2, 2][i % 10]], 4)),
-        Kind::Image => Some((&FILE[(i / 3) % 4], 3)),
-        _ => None,
+impl Kind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Verify => "VERIFY", Self::Image => "IMAGE",
+            Self::Sign => "SIGN", Self::Container => "CONTAINER", Self::Wait => "CLOUD",
+        }
     }
 }
 
-/// Runs `f`, animating `msg` meanwhile; on success prints `done` and the time
-/// taken. `f` must not write to stderr.
+/// Stop before the scope joins its worker, including during panic unwinding.
+struct StopWorker<'a> { stop: &'a AtomicBool, worker: Option<std::thread::Thread> }
+impl Drop for StopWorker<'_> {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(worker) = &self.worker { worker.unpark(); }
+    }
+}
+
+/// `f` must not print to stderr: the indicator owns only the current line.
 pub fn step<T>(kind: Kind, msg: &str, done: impl FnOnce(&T) -> String, f: impl FnOnce() -> Result<T>) -> Result<T> {
-    const RUNNING: u8 = 0;
-    const OK: u8 = 1;
-    const FAILED: u8 = 2;
     let start = Instant::now();
-    let state = AtomicU8::new(RUNNING);
-    let term = std::io::stderr().is_terminal() && std::env::var("TERM").map_or(true, |t| t != "dumb");
-    let (cols, rows) = terminal_size();
-    // A drawing needs room beside it and above it; else one line.
-    let drawn = term && cols >= 40 && rows >= 10;
-    let msg = fit(msg, cols.saturating_sub((if drawn { ART_WIDTH + 2 } else { 0 }) + 10));
-    let frame = |i: usize, art: Option<(&[&str; 6], usize)>| -> String {
-        let status = format!("{} {msg} {}s", SPIN[i % SPIN.len()], start.elapsed().as_secs());
-        match art.filter(|_| drawn) {
-            Some((lines, row)) => {
-                lines.iter().enumerate().map(|(r, l)| if r == row { format!("{l}  {status}") } else { l.to_string() }).collect::<Vec<_>>().join("\n")
-            }
-            None => status,
-        }
-    };
+    let term = std::io::stderr().is_terminal() && std::env::var("TERM").map_or(true, |t| t != "dumb") && std::env::var_os("NO_COLOR").is_none();
+    let color = term && std::env::var_os("NO_COLOR").is_none();
+    let stop = AtomicBool::new(false);
+    let completed = AtomicBool::new(false);
     let result = std::thread::scope(|scope| {
-        if term {
-            scope.spawn(|| {
-                let mut height = 0;
-                let mut draw = |text: String| {
-                    // Back to the first line of the last frame, clear to the end, redraw.
-                    let up = if height > 1 { format!("\x1b[{}A", height - 1) } else { String::new() };
-                    eprint!("{up}\r\x1b[J{text}");
-                    let _ = std::io::stderr().flush();
-                    height = text.lines().count();
-                };
-                for i in 0.. {
-                    if state.load(Ordering::Relaxed) != RUNNING {
-                        break;
-                    }
-                    draw(frame(i, art(kind, i)));
-                    std::thread::sleep(Duration::from_millis(100));
+        let worker = term.then(|| scope.spawn(|| {
+            let mut shown = false;
+            let mut tick = 0;
+            while !stop.load(Ordering::Acquire) {
+                if let Some(line) = frame(kind, msg, tick, start.elapsed(), terminal_columns(), color) {
+                    // One write overwrites the line; keep the cursor at column
+                    // zero. No screen clearing or hidden-cursor mode to undo.
+                    if !write_status(&format!("\r{line}\x1b[K\r")) { break; }
+                    shown = true;
+                } else if shown {
+                    write_status("\r\x1b[2K");
+                    shown = false;
                 }
-                if kind == Kind::Verify && state.load(Ordering::Relaxed) == OK && drawn {
-                    draw(frame(0, Some((&LOCK[2], 4)))); // show it locked
-                    std::thread::sleep(Duration::from_millis(300));
-                }
-                draw(String::new());
-            });
-        }
-        let r = f();
-        state.store(if r.is_ok() { OK } else { FAILED }, Ordering::Relaxed);
-        r
+                tick += 1;
+                std::thread::park_timeout(Duration::from_millis(250));
+            }
+            if shown {
+                if completed.load(Ordering::Acquire) { write_status("\r\x1b[2K"); }
+                // A panic hook may have printed a diagnostic; don't erase it.
+                else { write_status("\r\n"); }
+            }
+        }));
+        let _stop = StopWorker { stop: &stop, worker: worker.as_ref().map(|w| w.thread().clone()) };
+        let result = f();
+        completed.store(true, Ordering::Release);
+        result
     });
-    if let Ok(t) = &result {
-        eprintln!("✓ {} ({:.1}s)", done(t), start.elapsed().as_secs_f32());
-    }
+    if let Ok(value) = &result { eprintln!("✓ {} ({:.1}s)", done(value), start.elapsed().as_secs_f32()); }
     result
 }
 
-/// stderr's terminal size, (80, 24) when unknown.
-fn terminal_size() -> (usize, usize) {
-    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-    if unsafe { libc::ioctl(2, libc::TIOCGWINSZ, &mut ws) } == 0 && ws.ws_col > 0 && ws.ws_row > 0 {
-        (ws.ws_col as usize, ws.ws_row as usize)
-    } else {
-        (80, 24)
-    }
+fn write_status(text: &str) -> bool {
+    let mut stderr = std::io::stderr().lock();
+    stderr.write_all(text.as_bytes()).and_then(|_| stderr.flush()).is_ok()
 }
 
-/// `msg` cut to at most `max` characters, so no frame line wraps (a wrapped
-/// line would break redrawing in place).
-fn fit(msg: &str, max: usize) -> String {
-    let max = max.max(8);
-    if msg.chars().count() <= max { msg.to_string() } else { msg.chars().take(max - 1).chain(['…']).collect() }
+/// ASCII cells give predictable widths, including for unusual filenames or
+/// terminal controls. The permanent result retains the original full text.
+fn fit_ascii(message: &str, columns: usize) -> String {
+    let clean: String = message.chars().map(|c| {
+        if c.is_ascii_graphic() || c == ' ' { c }
+        else if c.is_control() { ' ' } else { '?' }
+    }).collect();
+    if clean.len() <= columns { clean }
+    else if columns > 3 { format!("{}...", &clean[..columns - 3]) }
+    else { clean[..columns].to_string() }
+}
+
+/// Leave two columns unused to avoid right-margin automatic wrapping.
+fn frame(kind: Kind, message: &str, tick: usize, elapsed: Duration, columns: usize, color: bool) -> Option<String> {
+    if columns < 40 { return None; }
+    let mark = [b'.', b'o', b'o', b'.'][tick % 4] as char;
+    let prefix = format!("  {mark} {:<9}  ", kind.label());
+    let timer = format!("  {:>4}s", elapsed.as_secs());
+    let available = columns.checked_sub(2 + prefix.len() + timer.len())?;
+    let message = format!("{:<available$}", fit_ascii(message, available));
+    if color {
+        Some(format!("\x1b[2m  {mark}\x1b[0m \x1b[1m{:<9}\x1b[0m  {message}\x1b[2m{timer}\x1b[0m", kind.label()))
+    } else { Some(format!("{prefix}{message}{timer}")) }
+}
+
+fn terminal_columns() -> usize {
+    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+    if unsafe { libc::ioctl(2, libc::TIOCGWINSZ, &mut ws) } == 0 && ws.ws_col > 0 { ws.ws_col as usize }
+    else { 80 }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn drawings_are_aligned_ascii() {
-        for frame in LOCK.iter().chain(FILE.iter()) {
-            for line in frame {
-                assert!(line.is_ascii() && line.len() == ART_WIDTH, "{line:?}");
+    fn narrow_and_changing_widths_never_wrap() {
+        for columns in 0..200 {
+            for seconds in [0, 9, 10, 99, 100, u64::MAX] {
+                if let Some(line) = frame(Kind::Container, &"long activity message ".repeat(10), 15, Duration::from_secs(seconds), columns, false) {
+                    assert!(line.is_ascii() && line.len() <= columns - 2, "{columns}: {line:?}");
+                    assert!(line.chars().all(|c| !c.is_control()));
+                }
             }
         }
+    }
+    #[test]
+    fn phase_and_timer_positions_stay_fixed() {
+        let first = frame(Kind::Verify, "checking evidence", 0, Duration::from_secs(9), 80, false).unwrap();
+        for tick in 1..30 {
+            let next = frame(Kind::Verify, "checking evidence", tick, Duration::from_secs(10), 80, false).unwrap();
+            assert_eq!(first.len(), next.len());
+            assert_eq!(first.find("VERIFY"), next.find("VERIFY"));
+            assert_eq!(first.find("checking evidence"), next.find("checking evidence"));
+        }
+    }
+    #[test]
+    fn transient_text_cannot_inject_controls_or_wide_cells() {
+        let text = fit_ascii("测试🙂\n\x1b[31mtext", 80);
+        assert!(text.is_ascii() && text.chars().all(|c| !c.is_control()));
+        assert_eq!(fit_ascii("message", 0), "");
+        assert_eq!(fit_ascii("message", 2), "me");
+    }
+    #[test]
+    fn no_color_frames_have_no_styling() {
+        assert!(!frame(Kind::Verify, "check", 3, Duration::ZERO, 80, false).unwrap().contains('\x1b'));
+        assert!(frame(Kind::Verify, "check", 3, Duration::ZERO, 80, true).unwrap().contains("\x1b[1m"));
+    }
+    #[test]
+    fn stop_guard_joins_worker_during_unwind() {
+        let stop = AtomicBool::new(false);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let result = std::panic::catch_unwind(|| std::thread::scope(|scope| {
+            let worker = scope.spawn(|| {
+                while !stop.load(Ordering::Acquire) { std::thread::park_timeout(Duration::from_secs(30)); }
+                tx.send(()).unwrap();
+            });
+            let _stop = StopWorker { stop: &stop, worker: Some(worker.thread().clone()) };
+            panic!("test operation panicked");
+        }));
+        assert!(result.is_err());
+        rx.recv_timeout(Duration::from_secs(1)).unwrap();
     }
 }

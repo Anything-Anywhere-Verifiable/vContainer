@@ -122,7 +122,7 @@ This demo uses plain HTTP and has no application authentication. Its port is ope
 vcontainer verify --session openrouter --export-policy openrouter-policy.json
 ```
 
-The policy contains the expected boot measurements and exact agent launch, including the image digest and model, but no secret values. Share it with someone who wants to verify the deployment; they also need network access to the VM's attestation port (7700). See the [verification commands](../README.md#command-reference).
+The policy contains the expected boot measurements and exact agent launch, including the image digest and model, but no secret values. Share it with someone who wants to verify the deployment; they also need network access to the VM's attestation port (7700). See the [verification commands](command-reference.md).
 
 ## 7. Remove the VM
 

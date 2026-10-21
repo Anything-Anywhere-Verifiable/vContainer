@@ -38,7 +38,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 vcontainer --help
 ```
 
-If you have uncommitted changes in the repository, add `--dev` to the installer command. Use `--dry-run` to preview setup commands. See [installation options](../README.md#install) for more detail.
+If you have uncommitted changes in the repository, add `--dev` to the installer command. Use `--dry-run` to preview setup commands. See [installation options](install.md) for more detail.
 
 Setup creates the cloud boot image and saves its expected measurements in `~/.config/vcontainer/release.json`. It does not start an agent VM. If you have already completed setup, skip to step 2.
 
@@ -54,7 +54,7 @@ from pathlib import Path
 api_key = Path("/run/secrets/MODEL_API_KEY").read_text().strip()
 ```
 
-Use the secret name your application expects. vContainer does not convert secret files to environment variables. The [command reference](../README.md#command-reference) explains how to override an image's entrypoint or command if needed.
+Use the secret name your application expects. vContainer does not convert secret files to environment variables. The [command reference](command-reference.md) explains how to override an image's entrypoint or command if needed.
 
 Choose the model, prompts, tools, authentication, and any TLS setup in your agent code or configuration. vContainer handles deployment and verification of that container.
 
@@ -131,7 +131,7 @@ Recheck the session and export a policy file:
 vcontainer verify --session my-agent --export-policy my-agent-policy.json
 ```
 
-You can share this policy with someone who wants to verify the deployment. It contains the expected measurements, image and launch configuration, and owner public key, but no secret values. They also need access to the VM's attestation port (7700); see [verification commands](../README.md#command-reference).
+You can share this policy with someone who wants to verify the deployment. It contains the expected measurements, image and launch configuration, and owner public key, but no secret values. They also need access to the VM's attestation port (7700); see [verification commands](command-reference.md).
 
 ## 7. Update or remove the deployment
 

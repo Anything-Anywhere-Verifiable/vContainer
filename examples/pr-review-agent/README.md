@@ -55,7 +55,7 @@ Run it with the key mounted where vContainer puts secrets. Replace the pull requ
 docker run --rm --platform linux/amd64 -v "$PWD/openrouter.key:/run/secrets/OPENROUTER_API_KEY:ro" -e PR_URL=https://github.com/OWNER/REPO/pull/N -e HEAD_SHA=SHA pr-review-agent
 ```
 
-In vContainer, start a session and deploy the image. Replace `IMAGE` with a full image reference: the published image that the [main README](../../README.md#more-examples) uses, or [your own build](#build-your-own-image). The agent opens no port:
+In vContainer, start a session and deploy the image. Replace `IMAGE` with a full image reference: the published image in the [public review example](../../docs/review-a-public-pull-request.md), or [your own build](#build-your-own-image). The agent opens no port:
 
 ```sh
 vcontainer run --session review
@@ -115,7 +115,7 @@ vcontainer deploy --session review IMAGE -e PR_URL=https://github.com/OWNER/REPO
 
 ## Build your own image
 
-The main README deploys an image that we publish, pinned by digest. To run your own build instead, build this directory and push the image to a private Artifact Registry repository; vContainer pulls it with your `gcloud` access token sealed to the VM. You need Docker (Docker Desktop on a Mac). Run the commands from this directory.
+The [public review example](../../docs/review-a-public-pull-request.md) deploys an image that we publish, pinned by digest. To run your own build instead, build this directory and push the image to a private Artifact Registry repository; vContainer pulls it with your `gcloud` access token sealed to the VM. You need Docker (Docker Desktop on a Mac). Run the commands from this directory.
 
 Set `REGISTRY` to your repository; `docker push` sends the image to whatever host and repository its name starts with. It is an ordinary shell variable that only shortens the commands below: `vcontainer` never reads it, and it lasts only for this terminal. Replace `PROJECT` with your project ID; `vcontainer` is the repository name used here:
 
