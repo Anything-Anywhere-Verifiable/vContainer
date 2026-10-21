@@ -1,27 +1,45 @@
 # vContainer
 
-vContainer is a minimal implementation for running an AI agent in the cloud confidentially and verifiably. It runs the agent, or any other container, in a confidential VM that you can verify before you trust it.
+Deploy your agent in a confidential VM in the cloud, keeping its memory and secrets private from the cloud host.
 
-An agent in the cloud holds API keys and often handles private data. On an ordinary VM, the cloud host can read both. A confidential VM keeps its memory encrypted from the host, and the hardware signs a quote of what the VM booted. vContainer builds on this:
+vContainer manages deployment and verification for your containerized agent. You bring the container image and API keys; vContainer creates the VM, verifies what booted, delivers your keys encrypted to that VM, and starts the agent only after verifying its recorded launch. The current implementation runs on Intel TDX confidential VMs on Google Cloud C3.
 
-- you verify the VM's firmware, boot image and empty state before the agent's image or keys reach it;
-- the agent's API keys are encrypted so that only the verified VM can read them;
-- others, such as the agent's users, can check the same evidence with a policy file you give them.
+- **Deploy:** run an ordinary `linux/amd64` agent container in a confidential VM.
+- **Verify:** check hardware evidence of the VM's boot image and the exact agent launch.
+- **Deliver secrets:** encrypt API keys to the verified VM and expose them to your agent as files.
+- **Share verification:** give your users a policy file so they can check the same evidence.
 
-vContainer does this with as little code as possible:
-
-| Part | Size |
+| Deployment guide | Start with |
 |---|---|
-| Code we wrote that runs in the VM (`/init` and the protocol) | about 1,450 lines of Rust |
-| CLI and verifier, on your machine | about 950 lines of Rust |
-| Kernel configuration | `allnoconfig` plus 107 options |
-| Build scripts | about 110 lines of shell |
+| [Deploy a container](docs/deploy-a-container.md) | A public hello-world image or another container you already have |
+| [Deploy an OpenRouter agent](docs/deploy-an-openrouter-agent.md) | The included Python agent and your OpenRouter API key |
+| [Deploy your own agent](docs/deploy-your-agent.md) | Your agent code and a Dockerfile |
 
-The VM boots a single file: a Linux kernel with a built-in initramfs whose only program is `/init`. There is no bootloader, root disk, systemd or container runtime. Until a container is deployed, the VM runs only the kernel and `/init`, which links musl and crates such as rustls, hpke and tar. The build is designed to be reproducible, and the file's measurement is predicted offline.
+To try it first, [install vContainer](#install) and [run hello-world](#example-1-a-public-image). For the privacy boundary, including application traffic and logs, see [Trust](#trust).
 
 ## How it works
 
 The steps below are for the demo platform, Intel TDX on Google Cloud C3.
+
+```mermaid
+sequenceDiagram
+    actor Owner
+    participant CLI as vcontainer CLI (your machine)
+    participant VM as Confidential VM (kernel + /init)
+    participant Registry as Container registry
+    Owner->>CLI: run --session demo
+    CLI->>VM: Create VM from published boot image
+    VM-->>CLI: Fresh hardware quote, boot measurements, boot key
+    CLI->>CLI: Verify firmware, boot image, and empty state
+    Owner->>CLI: deploy IMAGE --secret NAME=@FILE
+    CLI->>VM: Signed launch with image digest and encrypted secrets
+    VM->>VM: Record launch in hardware-backed ledger
+    VM-->>CLI: Fresh evidence of recorded launch
+    CLI->>CLI: Check launch matches what was sent
+    CLI->>VM: Signed commit authorizing image pull
+    VM->>Registry: Pull image by digest and verify layers
+    VM->>VM: Run container with secrets in /run/secrets
+```
 
 1. **Boot and measure.** `vcontainer run` creates the VM. Before anything else, `/init` records a fresh key for this boot, then your public key, in a hardware register that can only be extended.
 2. **Verify the empty VM.** Your machine asks the VM for a quote over a fresh nonce and checks it: Intel's signature, Google's signed firmware, the exact boot image and the recorded keys.
@@ -30,22 +48,20 @@ The steps below are for the demo platform, Intel TDX on Google Cloud C3.
 
 As a result, you have verified the VM's boot and its empty state before it pulls anything, and secrets reach only that VM. The container cannot extend the register or request quotes over its own data, so it cannot forge the evidence.
 
+The VM boots a single file: a Linux kernel with a built-in initramfs whose only program is `/init`. There is no bootloader, root disk, systemd or container runtime. Until a container is deployed, the VM runs only the kernel and `/init`. The build is designed to be reproducible, and the file's measurement is predicted offline.
+
 ## Install
 
-Requirements:
+### Prerequisites
 
-- `rustup` (the repository pins Rust 1.95.0). The CLI runs on Linux and on macOS, Apple Silicon or Intel; CI builds and tests it on both Macs.
-- To build the boot image: Linux x86-64 with Docker. On a Mac, build and publish the image on a Linux machine, then copy `~/.config/vcontainer/release.json` to the Mac and install only the CLI.
-- A Google Cloud project with the Compute Engine API enabled and C3 quota in your zone.
-- `gcloud`, logged in.
+- Python 3.9+ for the installer; it uses only the standard library.
+- A native C linker/toolchain for the CLI. The installer runs `rustup` to prepare the repository's Rust toolchain (pinned to 1.95.0). If rustup is missing, it downloads and runs the official installer; this requires `curl` and `sh`.
+- To build the boot image: **Linux x86-64**, Git, Bash, and a running Docker daemon accessible without `sudo`. Kernel and disk-building tools run inside the pinned Docker build container.
+- To publish or run VMs: `gcloud`, logged in with `gcloud auth login`, and a Google Cloud project with Compute Engine enabled. You need permission to create Cloud Storage buckets/objects and Compute Engine images; running sessions also needs VM/network/firewall permissions and C3 quota in your zone.
 
-Each block below is one command, so you can copy and run them one at a time.
+The installer sets up Rust automatically and checks the other prerequisites; install those tools yourself before running it. It reuses rustup when available, leaves your global Rust default and shell startup files unchanged, and makes Cargo available immediately for the remaining setup steps. The first build downloads Rust dependencies, the kernel source, and the build container's packages.
 
-Set your Google Cloud project (replace `PROJECT` with its ID):
-
-```sh
-gcloud config set project PROJECT
-```
+### Build, install, and publish on Linux x86-64
 
 Get the code:
 
@@ -53,35 +69,88 @@ Get the code:
 git clone https://github.com/Mengyuan-L/vContainer && cd vContainer
 ```
 
-Build `/init` and the kernel in a pinned build container. The result is `out/BOOTX64.EFI` and `out/disk.raw`:
+Preview the setup commands without executing anything:
+
+```sh
+python3 scripts/install.py --publish --project PROJECT --dry-run
+```
+
+Replace `PROJECT` with your project ID and run setup:
+
+```sh
+python3 scripts/install.py --publish --project PROJECT
+```
+
+This builds `/init`, the kernel, and the boot disk through `scripts/build-image.sh`; installs the Rust CLI; checks its help and expected measurements; then publishes the image to Google Cloud. Publishing creates cloud resources (a storage bucket if needed, an uploaded disk, and a Compute Engine image); it does not start a VM. The installer stops on the first failed command. It can be invoked from any working directory.
+
+The `vcontainer` executable normally goes in `~/.cargo/bin`. Add that directory to your shell's `PATH` if needed:
+
+```sh
+export PATH="$HOME/.cargo/bin:$PATH"
+```
+
+Set the project for subsequent CLI commands; the installer's `--project` applies only to that setup invocation:
+
+```sh
+gcloud config set project PROJECT
+```
+
+Then continue with [Example 1](#example-1-a-public-image).
+
+| Setup option | What it does |
+|---|---|
+| No flags | Builds the boot image and installs the CLI locally; does not access Google Cloud. Publish later with `vcontainer publish`. |
+| `--publish --project PROJECT` | Also publishes the boot image and saves the local release settings. |
+| `--cli-only` | Installs only the CLI; useful on macOS or when the boot image is already published. |
+| `--dev` | Allows local source changes; the resulting image is not recorded as a release from a clean commit. |
+| `--clean` | Drops cached kernel source/objects before building; clean release builds already do this. |
+| `--install-root PATH` | Chooses the Cargo installation root; the executable goes under `PATH/bin`. Defaults to `CARGO_INSTALL_ROOT`, then `CARGO_HOME`, then `~/.cargo`. |
+| `--dry-run` | Prints commands without executing them or checking prerequisites. |
+
+Use `python3 scripts/install.py --help` for all options. The installer covers normal setup; the hardware diagnostic probe scripts are a separate workflow in [image/README-image.md](image/README-image.md).
+
+### CLI only on macOS or another Linux machine
+
+The CLI runs on Linux and macOS (Apple Silicon or Intel). In a checkout on the client machine:
+
+```sh
+python3 scripts/install.py --cli-only
+```
+
+Build and publish the boot image on a Linux x86-64 machine first. Copy its `~/.config/vcontainer/release.json` to that same path on your client, authenticate `gcloud`, and set the same project. Each client creates its own owner key on first use; you do not need to copy the builder's private key.
+
+### What gets built and saved
+
+There are two different images:
+
+| Image | Purpose | When to rebuild |
+|---|---|---|
+| **Boot image**, built by this repository | Kernel + `/init` that records and launches your workload | When vContainer itself changes |
+| **Application/container image**, supplied by you or a registry | Your agent or other application, as a `linux/amd64` OCI image | When your application changes; no boot-image rebuild needed |
+
+Local boot artifacts are in `out/`: `BOOTX64.EFI`, `disk.raw`, `vcontainer.tar.gz`, measurements, and build metadata. Publishing writes `~/.config/vcontainer/release.json`, which tells the CLI which cloud image and measurements to expect. Your owner key and session files also live in `~/.config/vcontainer`.
+
+<details>
+<summary>Equivalent manual setup commands (from the repository root)</summary>
 
 ```sh
 scripts/build-image.sh
-```
-
-Install the `vcontainer` CLI:
-
-```sh
 cargo install --locked --path crates/cli
-```
-
-Create the GCE image in your project and record its expected measurements:
-
-```sh
+gcloud config set project PROJECT
 vcontainer publish
 ```
 
-You build and publish the boot image once. It is the same verified image for every container you run: the container image is pulled and measured only when you deploy it, so a new or changed agent image never needs a new boot image. Rebuild only when vContainer itself changes. The first build downloads the kernel source and the build container's packages.
+</details>
 
-`scripts/build-image.sh` refuses a checkout with uncommitted changes; pass `--dev` while hacking. Anyone can rebuild a release byte for byte from its commit, which `vcontainer publish` records and `vcontainer verify` prints. To see the expected measurements without publishing, run `vcontainer measure`.
-
-Your owner key and session files live in `~/.config/vcontainer`. The key is created on first use.
+Release builds require a clean Git checkout. While changing code or documentation, use `python3 scripts/install.py --dev` (or `scripts/build-image.sh --dev` for a manual build). Anyone can rebuild a release byte for byte from its commit, which `vcontainer publish` records and `vcontainer verify` prints. To inspect measurements later without publishing, run `vcontainer measure`.
 
 ## Usage
 
-A session is one VM, and each boot of it runs one container. You start a session, deploy one container into it, and remove the session when you are done. The three examples below each follow that order.
+A session is one VM, and each boot of it runs one container. You start a session, deploy one container into it, and remove the session when you are done. Try the examples below, or use the deployment guides above for a full walkthrough from prerequisites to cleanup.
 
 ### Example 1: a public image
+
+For setup and more container options, follow [Deploy a container](docs/deploy-a-container.md).
 
 Start a session named `demo`. The CLI creates the VM and verifies it before anything is sent to it:
 
@@ -167,78 +236,9 @@ vcontainer rm --session chat
 
 ### Example 3: your own agent image, with an API key
 
-The [OpenRouter agent](examples/openrouter-agent) is 40 lines of Python. It answers `POST /chat` through OpenRouter with an API key that only the verified VM can read. You build its image yourself, push it to a private Artifact Registry repository, and pass the key as a secret.
+Follow [Deploy your own agent](docs/deploy-your-agent.md) for the complete path from a Dockerfile to a verified deployment, including registry setup, secret delivery, updates, and cleanup.
 
-Set `REGISTRY` to your repository; `docker push` sends the image to whatever host and repository its name starts with. It is an ordinary shell variable that only shortens the commands below: `vcontainer` never reads it, and it lasts only for this terminal. Replace `PROJECT` with your project ID; `vcontainer` is the repository name used here:
-
-```sh
-REGISTRY=us-central1-docker.pkg.dev/PROJECT/vcontainer
-```
-
-Create the repository (once per project):
-
-```sh
-gcloud artifacts repositories create vcontainer --repository-format=docker --location=us-central1
-```
-
-Let Docker push to it (once per machine):
-
-```sh
-gcloud auth configure-docker us-central1-docker.pkg.dev
-```
-
-Build the agent image and push it:
-
-```sh
-docker build --platform linux/amd64 -t "$REGISTRY/openrouter-agent:v1" examples/openrouter-agent
-```
-
-```sh
-docker push "$REGISTRY/openrouter-agent:v1"
-```
-
-Save your OpenRouter API key in a file named `openrouter.key` that holds only the key. Then start a session:
-
-```sh
-vcontainer run --session agent
-```
-
-Deploy the agent. `--secret` encrypts the key to this VM, and `-p 8080` opens the agent's port to your IP:
-
-```sh
-vcontainer deploy --session agent "$REGISTRY/openrouter-agent:v1" -p 8080 --secret OPENROUTER_API_KEY=@openrouter.key
-```
-
-```console
-✓ session agent passed verification (1.1s)
-✓ sent the signed launch (1.2s)
-✓ the VM measured exactly this launch (1.1s)
-✓ committed: the VM may pull the image (5.7s)
-✓ container Running (15.0s)
-session agent ([IP], [ZONE]): VERIFIED
-  ...
-  ✓ launch measured before pull: us-central1-docker.pkg.dev/[PROJECT]/vcontainer/openrouter-agent@sha256:acdf834c…
-  ✓ container sealed: manifest sha256:b38d15a0…
-  state: Running
-  container: us-central1-docker.pkg.dev/[PROJECT]/vcontainer/openrouter-agent@sha256:acdf834c… env=[] secrets={"OPENROUTER_API_KEY"}
-  port 8080: http://[IP]:8080
-```
-
-Deploying this 43 MB image takes 20–30 seconds. The agent reads its key from `/run/secrets/OPENROUTER_API_KEY`. Set `IP` to the address in the last line (the one below is only an example), then chat with the agent:
-
-```sh
-IP=203.0.113.7
-```
-
-```sh
-curl -X POST "http://$IP:8080/chat" -d '{"message":"Reply with exactly: vContainer works"}'
-```
-
-Remove the session when you are done:
-
-```sh
-vcontainer rm --session agent
-```
+For a working application you can adapt, follow [Deploy an OpenRouter agent](docs/deploy-an-openrouter-agent.md). The included demo reads its API key from `/run/secrets/OPENROUTER_API_KEY` and serves `POST /chat` through OpenRouter.
 
 ### Command reference
 
@@ -246,6 +246,8 @@ vcontainer rm --session agent
 
 - `--zone ZONE` and `--machine-type TYPE` choose where and what to run (defaults: `us-central1-a`, `c3-standard-4`).
 - `--allow-from CIDR` sets who can reach the attestation port (7700) and the container's ports (default: your public IP).
+
+`--allow-from` and published ports control incoming connections only. vContainer does not implement outbound destination filtering or an egress allowlist.
 
 **`vcontainer deploy --session NAME IMAGE`** verifies the session, sends the launch, verifies that the VM recorded it, and then lets the VM pull and start the image. `vcontainer pull` is an alias. Options:
 
@@ -283,6 +285,8 @@ On the demo platform, vContainer trusts:
 
 The host is otherwise untrusted: it controls the network, instance metadata, the disk, the serial console and the path to the registry. The container's isolation exists so that the container cannot forge the evidence. It is not a sandbox for untrusted code.
 
+vContainer protects the agent's memory from the cloud host. You still need to trust the agent code: there is no built-in egress control or agent tool policy, and the agent can send data to external services. Application authentication and TLS are your responsibility.
+
 Only secret values and the registry token are encrypted, and the container itself can still leak them. The rest is public:
 
 - the launch configuration (image, command, environment variables and secret names), which anyone can read from the ledger;
@@ -305,8 +309,13 @@ Limits:
 
 ## Learn more
 
+- [Deploy a container](docs/deploy-a-container.md) starts with a public image and covers configuration, logs, verification, and cleanup.
+- [Deploy an OpenRouter agent](docs/deploy-an-openrouter-agent.md) deploys the included demo with an encrypted API key.
+- [Deploy your own agent](docs/deploy-your-agent.md) covers prerequisites, building your image, secret delivery, deployment, verification, and cleanup.
 - [docs/whitepaper.md](docs/whitepaper.md) presents the design top-down: what a PASS establishes, what it does not, and why.
 - [image/README-image.md](image/README-image.md) covers the kernel configuration and the platform facts measured on real C3 hardware.
+- [examples/openrouter-agent/README.md](examples/openrouter-agent/README.md) walks through building and deploying your own agent image.
+- [scripts/install.py](scripts/install.py) orchestrates normal build/install/publish setup; [scripts/build-image.sh](scripts/build-image.sh) contains the reproducible boot-image build.
 - Code:
   - [crates/core](crates/core): the protocol and the OCI client;
   - [crates/init](crates/init): the guest `/init`;

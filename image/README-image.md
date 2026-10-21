@@ -1,5 +1,31 @@
 # vContainer boot image
 
+This is the VM's **boot image**, not your agent's container image. For normal
+setup and a first deployment, start with the [main README](../README.md#install).
+The commands here run from the repository root.
+
+## Normal build
+
+On Linux x86-64 with Python 3.9+, a native C toolchain, Git, Bash, and Docker available
+(the installer sets up Rust through rustup; `curl` and `sh` are needed if rustup is missing):
+
+```sh
+python3 scripts/install.py
+```
+
+This builds the boot image, installs the `vcontainer` CLI, and prints the expected
+measurements. Use `--dev` for an uncommitted checkout. To also upload the image to
+Google Cloud and save `~/.config/vcontainer/release.json`, use
+`python3 scripts/install.py --publish --project PROJECT` with authenticated
+`gcloud`. To build only the boot artifacts without installing the CLI, run
+`scripts/build-image.sh` directly.
+
+You do not need the hardware probe below to deploy an application. Rebuild the
+boot image when vContainer changes; deploy a new application image with
+`vcontainer deploy` without rebuilding the boot image.
+
+## Image layout and build inputs
+
 One reproducible PE file, `BOOTX64.EFI` (a Linux 6.18.57 EFI-stub kernel with a
 built-in initramfs holding only `/init`, plus a built-in command line), on a
 1 GiB GPT disk with a single ESP. Google's TDX firmware loads it from
@@ -12,8 +38,15 @@ Design: `docs/design/DESIGN.md` §4.1, §4.2, §14.
 | `image/initramfs.list` | `gen_init_cpio` list of the built-in initramfs |
 | `image/check-config.sh` | fails on any requested value missing from, or forbidden symbol present in, the final `.config` |
 | `scripts/build-image.sh` | builds `vcontainer/builder:dev`, then `/init` and everything else in it; writes `out/` |
-| `tools/tdx-probe/` | M0 probe used as `/init` (`build.sh`, `gce-run.sh`) |
+| `scripts/install.py` | normal build/install wrapper; optional cloud publication |
+| `tools/tdx-probe/` | diagnostic M0 probe that replaces `/init` (`build.sh`, `gce-run.sh`); not needed for normal setup |
 | `tools/predict-rtmr1.py` | offline RTMR1 prediction; checks it against a probe log |
+
+## Optional hardware diagnostic probe
+
+This workflow replaces the normal `/init` with a diagnostic program. The resulting
+image cannot run application deployments. It is for checking platform behavior
+and measurements on real TDX hardware.
 
 Build an image with the probe as `/init`:
 
@@ -21,19 +54,26 @@ Build an image with the probe as `/init`:
 scripts/build-image.sh --dev --init "$(tools/tdx-probe/build.sh)"
 ```
 
-Boot it on real TDX VMs and collect their serial logs (the script deletes the VMs afterwards):
+Set your own project and existing bucket, then boot real TDX VMs and collect
+their serial logs. This creates billable resources; the script deletes its VMs
+and image afterwards, but retains the uploaded object. Choose a zone with C3
+quota:
 
 ```sh
-tools/tdx-probe/gce-run.sh c3-standard-4 c3-standard-8
+PROJECT=YOUR_PROJECT BUCKET=YOUR_BUCKET ZONE=us-central1-a tools/tdx-probe/gce-run.sh c3-standard-4 c3-standard-8
 ```
 
 Check the offline RTMR1 prediction against a probe log:
 
 ```sh
-python3 tools/predict-rtmr1.py out/BOOTX64.EFI out/disk.raw out/probe-serial.log
+python3 tools/predict-rtmr1.py out/BOOTX64.EFI out/disk.raw out/probe-serial-c3-standard-4.log
 ```
 
-Build notes:
+Rebuild the normal boot image with `python3 scripts/install.py --dev --clean`
+before publishing an image for application use.
+
+## Build notes
+
 - Source = `.cache/linux-6.18.57.tar.xz` (sha256 `5bd9acdc…f98c`), verified
   whenever `.cache/linux-6.18.57` is extracted (`--clean` drops the tree).
 - `KBUILD_BUILD_TIMESTAMP` = `SOURCE_DATE_EPOCH` = 2026-01-01 00:00:00 UTC
