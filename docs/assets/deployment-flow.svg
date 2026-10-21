@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="470" viewBox="0 0 1040 470" role="img" aria-labelledby="title desc">
+  <title id="title">vContainer: verify, launch, and commit</title>
+  <desc id="desc">The owner CLI creates and verifies an empty confidential VM containing the kernel and /init. Only then does deploy send a signed launch and encrypted secrets. The VM decrypts the secrets and records the launch, and the CLI verifies that record. A signed commit then permits the VM to pull the image by digest from an external registry, check the image, and run the agent or container.</desc>
+  <defs>
+    <marker id="arrow-blue" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M1 1 7 4 1 7" fill="none" stroke="#2563a6" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <marker id="arrow-teal" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M1 1 7 4 1 7" fill="none" stroke="#168078" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      text{font-family:Arial,Helvetica,sans-serif;fill:#25364b}
+      .heading{font-size:20px;font-weight:700}
+      .step{font-size:17px;font-weight:700}
+      .detail{font-size:14px;fill:#5c6d81}
+      .label{font-size:14px;fill:#2563a6}
+      .verified{font-size:14px;fill:#168078}
+      .mono{font-family:Consolas,"Liberation Mono",monospace;font-size:14px;fill:#5c6d81}
+      .outbound{fill:none;stroke:#2563a6;stroke-width:1.8;marker-end:url(#arrow-blue)}
+      .inbound{fill:none;stroke:#168078;stroke-width:1.8;marker-end:url(#arrow-teal)}
+      .icon{fill:none;stroke:#2563a6;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+    </style>
+  </defs>
+
+  <rect width="1040" height="470" rx="14" fill="#fff"/>
+  <rect x="1" y="1" width="1038" height="468" rx="13" fill="none" stroke="#e2e8f0"/>
+
+  <!-- Roles. The VM boundary contains the boot code and the eventual workload. -->
+  <g class="icon" transform="translate(32 41)">
+    <rect width="29" height="23" rx="4"/>
+    <path d="m7 7 4 4-4 4m8 0h6"/>
+  </g>
+  <text x="75" y="52" class="heading">Owner CLI</text>
+  <text x="75" y="74" class="detail">Your machine</text>
+
+  <rect x="470" y="26" width="310" height="400" rx="12" fill="#f5f9ff" stroke="#a7c4e5" stroke-width="1.5"/>
+  <g class="icon" transform="translate(491 40)">
+    <path d="M7 21H25a6 6 0 0 0 1-12 8 8 0 0 0-15-3A7.5 7.5 0 0 0 7 21Z"/>
+    <rect x="10" y="11" width="13" height="16" rx="2" fill="#f5f9ff"/>
+    <path d="M14 16h5m-5 5h5"/>
+  </g>
+  <text x="535" y="53" class="heading">Confidential VM</text>
+  <text x="535" y="75" class="mono">kernel + /init</text>
+  <path d="M491 95H759" stroke="#d6e4f3"/>
+
+  <path d="M32 202H758M32 318H758" fill="none" stroke="#e2e8f0" stroke-dasharray="3 5"/>
+
+  <!-- 1: Verify an empty VM before sending any workload secrets. -->
+  <circle cx="48" cy="140" r="16" fill="#eaf2fc"/>
+  <text x="48" y="145" class="step" text-anchor="middle" fill="#2563a6">1</text>
+  <text x="78" y="135" class="step">Create + verify</text>
+  <text x="78" y="157" class="mono">vcontainer run</text>
+  <path d="M260 142H466" class="outbound"/>
+  <text x="363" y="128" class="label" text-anchor="middle">create VM</text>
+  <path d="M470 181H260" class="inbound"/>
+  <text x="363" y="169" class="verified" text-anchor="middle">verify empty VM</text>
+  <text x="493" y="142" class="step">Empty VM</text>
+  <text x="493" y="164" class="detail">Boot quote + fresh boot key</text>
+
+  <!-- 2: Decrypt and record before the owner verifies the launch. -->
+  <circle cx="48" cy="250" r="16" fill="#eaf2fc"/>
+  <text x="48" y="255" class="step" text-anchor="middle" fill="#2563a6">2</text>
+  <text x="78" y="245" class="step">Record + verify</text>
+  <text x="78" y="267" class="mono">vcontainer deploy</text>
+  <path d="M260 249H466" class="outbound"/>
+  <text x="363" y="220" class="label" text-anchor="middle">signed launch</text>
+  <text x="363" y="237" class="label" text-anchor="middle">+ encrypted secrets</text>
+  <path d="M470 294H260" class="inbound"/>
+  <text x="363" y="282" class="verified" text-anchor="middle">verify launch record</text>
+  <text x="493" y="239" class="step">Decrypt secrets</text>
+  <text x="493" y="261" class="detail">Record launch · wait for commit</text>
+
+  <!-- 3: Only a commit enables a registry pull and workload execution. -->
+  <circle cx="48" cy="366" r="16" fill="#e8f5f2"/>
+  <text x="48" y="371" class="step" text-anchor="middle" fill="#168078">3</text>
+  <text x="78" y="361" class="step">Commit + run</text>
+  <text x="78" y="383" class="detail">deploy continues</text>
+  <path d="M260 348H466" class="outbound"/>
+  <text x="363" y="335" class="label" text-anchor="middle">signed commit</text>
+  <text x="493" y="350" class="step">Pull + check image</text>
+  <text x="493" y="371" class="detail">Pinned digest · verified layers</text>
+  <rect x="492" y="385" width="265" height="28" rx="6" fill="#e8f5f2" stroke="#b4dad2"/>
+  <text x="624.5" y="404" class="step" text-anchor="middle" fill="#16776f">Run agent / container</text>
+
+  <rect x="884" y="307" width="131" height="119" rx="10" fill="#f8fafc" stroke="#cbd5e1"/>
+  <g class="icon" transform="translate(935 323)">
+    <path d="m0 7 14-7 14 7v16l-14 7-14-7Z M0 7l14 7 14-7M14 14v16M7 3.5l14 7"/>
+  </g>
+  <text x="949.5" y="379" class="step" text-anchor="middle">Registry</text>
+  <text x="949.5" y="401" class="detail" text-anchor="middle">Outside the VM</text>
+  <path d="M780 365H880" class="outbound"/>
+  <text x="831" y="352" class="label" text-anchor="middle">pull digest</text>
+  <path d="M884 391H784" class="inbound"/>
+  <text x="832" y="378" class="verified" text-anchor="middle">image layers</text>
+
+  <text x="32" y="451" class="detail">Verify the VM → deliver secrets → verify the launch → commit → pull and run.</text>
+</svg>

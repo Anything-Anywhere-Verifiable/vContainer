@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="182" height="24" viewBox="0 0 182 24" role="img" aria-labelledby="title">
+  <title id="title">Code license: Apache-2.0</title>
+  <clipPath id="corners"><rect width="182" height="24" rx="3"/></clipPath>
+  <g clip-path="url(#corners)">
+    <path fill="#334155" d="M0 0h86v24H0z"/>
+    <path fill="#2563eb" d="M86 0h96v24H86z"/>
+  </g>
+  <g fill="#fff" text-anchor="middle" font-family="DejaVu Sans, Verdana, sans-serif" font-size="11">
+    <text x="43" y="16">Code license</text>
+    <text x="134" y="16">Apache-2.0</text>
+  </g>
+</svg>
