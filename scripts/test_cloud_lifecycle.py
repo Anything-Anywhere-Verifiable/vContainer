@@ -339,6 +339,30 @@ class CloudLifecycleTests(unittest.TestCase):
             ["compute", "instances", "delete"], ["compute", "firewall-rules", "delete"],
         ])
 
+    def test_rm_reports_unwritable_record_and_allows_retry(self):
+        original = self.save_session()
+        # The VM/firewall are already gone; only the stale local record remains.
+        self.set_cloud()
+        self.sessions.chmod(0o555)
+        self.addCleanup(self.sessions.chmod, 0o755)
+        probe = self.sessions / "permission-probe"
+        try:
+            probe.write_text("probe")
+        except PermissionError:
+            pass
+        else:
+            probe.unlink()
+            self.skipTest("this user can write mode-0555 directories (for example root); rerun as an unprivileged UID")
+        failed = self.cli("rm", error="remove session record")
+        self.assertNotIn("deleted session", failed.stdout + failed.stderr)
+        self.assertEqual(self.session_path.read_bytes(), original)
+        self.assertEqual(self.mutations(), [])
+        # Restoring access must make the same command finish the local cleanup.
+        self.sessions.chmod(0o755)
+        self.cli("rm", succeeds=True)
+        self.assertFalse(self.session_path.exists())
+        self.assertEqual(self.mutations(), [])
+
     def test_create_uses_array_result_without_second_instance_lookup(self):
         self.set_cloud(create_result=instance(), fail_firewall_create=1)
         self.cli("run", error="injected firewall create failure before HTTP")

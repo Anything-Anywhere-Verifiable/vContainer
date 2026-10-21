@@ -469,9 +469,9 @@ fn logs(name: &str) -> Result<()> {
 fn rm(name: &str) -> Result<()> {
     let s = state::load_session(name)?;
     anim::step(Kind::Wait, &format!("deleting VM {name} and its firewall rule"), |_| format!("deleted session {name}"), || {
-        gcp::delete(&s.project, &s.name, &s.zone, s.policy.instance.id)
+        gcp::delete(&s.project, &s.name, &s.zone, s.policy.instance.id)?;
+        state::remove_session(name)
     })?;
-    state::remove_session(name)?;
     Ok(())
 }
 

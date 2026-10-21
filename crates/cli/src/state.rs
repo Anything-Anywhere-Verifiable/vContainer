@@ -163,8 +163,12 @@ pub fn save_session(s: &Session) -> Result<()> {
 }
 
 pub fn remove_session(name: &str) -> Result<()> {
-    let _ = fs::remove_file(session_path(name)?);
-    Ok(())
+    let path = session_path(name)?;
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("remove session record {}", path.display())),
+    }
 }
 
 pub fn sessions() -> Result<Vec<Session>> {
