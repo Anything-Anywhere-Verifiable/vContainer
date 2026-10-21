@@ -2,14 +2,17 @@
 
 The model gets five tools and nothing else: no shell, no network, no keys.
 The keys are sealed to the verified VM and read from /run/secrets:
-OPENROUTER_API_KEY, and optionally GITHUB_TOKEN. Without a token the review
-is printed to stdout. With one, the agent can read a private repository and
-posts the review to the pull request as a comment review; the output then
-shows nothing of the repository: tool names, the review's URL, and errors
-without details.
+OPENROUTER_API_KEY, and optionally GITHUB_TOKEN, with which the agent can
+read a private repository. By default the review is printed to stdout; for a
+private repository only if OUTPUT=print is set, since in vContainer stdout is
+the serial console, which the host can read. With OUTPUT=post and a token,
+the agent posts the review to the pull request as a comment review; the
+output then shows nothing of the repository: tool names, the review's URL,
+and errors without details.
 
 Environment: PR_URL (https://github.com/OWNER/REPO/pull/N), HEAD_SHA (the
-40-hex commit to review), MODEL (optional, an OpenRouter model id).
+40-hex commit to review), OUTPUT (optional, print or post), MODEL (optional,
+an OpenRouter model id).
 Exit codes: 0 reviewed, 2 bad or unsupported input, 3 the PR head is not
 HEAD_SHA (or moved before posting), 4 GitHub or model error.
 """
@@ -31,8 +34,10 @@ MAX_RESULT = 60_000   # characters per tool result
 MAX_LINES = 800       # lines per read_file or get_diff call
 MAX_COMMENTS = 10
 MAX_BODY = 4000       # characters per comment; the summary may have twice as many
+MAX_TOKENS = 1_000_000  # reported model tokens after which the next turn is the last
+MAX_REPLY = 8000      # tokens per model reply
 
-PRIVATE = False       # set with GITHUB_TOKEN: print nothing of the repository
+PRIVATE = False       # set with OUTPUT=post: print nothing of the repository
 
 SYSTEM = """You review one GitHub pull request at one commit.
 
@@ -349,7 +354,7 @@ class Model:
         self.tokens = [0, 0]
 
     def chat(self, messages):
-        data = json.dumps({"model": self.model, "messages": messages, "tools": TOOLS}).encode()
+        data = json.dumps({"model": self.model, "messages": messages, "tools": TOOLS, "max_tokens": MAX_REPLY}).encode()
         for attempt in range(4):
             last = attempt == 3
             try:
@@ -388,12 +393,13 @@ def run(gh, model, pr, show_args):
     ]
     nudged = False
     for step in range(MAX_STEPS):
-        if step == MAX_STEPS - 1:
+        last = step == MAX_STEPS - 1 or sum(model.tokens) >= MAX_TOKENS
+        if last:
             messages.append({"role": "user", "content": LAST_TURN})
         message = model.chat(messages)
         messages.append(message)
         calls = message.get("tool_calls") or []
-        if not calls:
+        if not calls and not last:
             if nudged:
                 raise Fail(4, "the model stopped without submitting a review")
             messages.append({"role": "user", "content": "Call submit_review to finish the review."})
@@ -416,7 +422,9 @@ def run(gh, model, pr, show_args):
             except ToolError as e:
                 result = f"error: {e}"
             messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
-    raise Fail(4, f"no review after {MAX_STEPS} model turns")
+        if last:
+            break
+    raise Fail(4, f"no review after {step + 1} model turns")
 
 
 def review_body(summary, outside, model, sha):
@@ -483,10 +491,14 @@ def main():
     sha = os.environ.get("HEAD_SHA", "").lower()
     if not m or m.group(2) in (".", "..") or not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise Fail(2, "set PR_URL=https://github.com/OWNER/REPO/pull/N and HEAD_SHA to the 40-hex commit to review")
+    output = os.environ.get("OUTPUT")
+    if output not in (None, "print", "post"):
+        raise Fail(2, "OUTPUT must be print or post")
     global PRIVATE
+    # Until the repository is known to be public, print nothing of it.
+    PRIVATE = output != "print"
     key = secret("OPENROUTER_API_KEY", required=True)
-    token = secret("GITHUB_TOKEN", required=False)
-    PRIVATE = token is not None
+    token = secret("GITHUB_TOKEN", required=output == "post")
     owner, repo, number = m.groups()
     model = Model(key, os.environ.get("MODEL", "anthropic/claude-sonnet-5.5"))
     gh = GitHub(owner, repo, sha, token)
@@ -495,12 +507,17 @@ def main():
         pr = gh.get(f"/pulls/{number}")
     except ToolError:
         raise Fail(2, f"{owner}/{repo}#{number} not found (is the repository public, or does GITHUB_TOKEN cover it?)")
+    if output is None:
+        if pr["base"]["repo"].get("private") is not False:
+            raise Fail(2, f"{owner}/{repo} is private: set OUTPUT=post to post the review, or OUTPUT=print to print it "
+                          "(in vContainer the host can read the serial console)")
+        PRIVATE = False
     if pr["head"]["sha"] != sha:
         raise Fail(3, f"the pull request head is {pr['head']['sha']}, not HEAD_SHA {sha}; refusing to review another commit",
                    "the pull request head is not HEAD_SHA; refusing to review another commit")
     try:
-        review, summary, comments = run(gh, model, pr, show_args=token is None)
-        if token:
+        review, summary, comments = run(gh, model, pr, show_args=not PRIVATE)
+        if output == "post":
             # Post only if the pull request still points at the reviewed commit.
             if gh.get(f"/pulls/{number}")["head"]["sha"] != sha:
                 raise Fail(3, "the pull request moved to another commit during the review; not posting")
@@ -508,7 +525,7 @@ def main():
             log(f"\nposted a review of {sha[:12]} with {len(comments)} comments, {inline} inline: {url}")
     except ToolError as e:
         raise Fail(4, f"GitHub: {e}", "GitHub: a request failed")
-    if not token:
+    if output != "post":
         log(f"\nreview of {owner}/{repo}#{number} at {sha[:12]}: {len(comments)} comments\n\n{summary.strip()}")
         for c in comments:
             body = "\n".join("  " + line for line in c["body"].strip().splitlines())

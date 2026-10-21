@@ -204,7 +204,7 @@ vcontainer run --session public-review
 Deploy the agent, pinned by digest. The pull request and its commit are environment variables, so they are part of the measured launch; if the pull request has moved to another commit, the agent stops without reviewing it. The agent opens no port:
 
 ```sh
-vcontainer deploy --session public-review docker.io/terryxhx/pr-review-agent@sha256:fc20c8d1369edacbd77405847d94efdca733df17b883a908d0db29e28865776b \
+vcontainer deploy --session public-review docker.io/terryxhx/pr-review-agent@sha256:23c5696ea6a1544e3d82025d91c3ad74ecce14638abcaa8c56c6ed85933e2aad \
   -e PR_URL=https://github.com/haoxxu/vContainer-review-demo/pull/1 \
   -e HEAD_SHA=688c61413e4e9bf830a58bab3e344d25582b8a33 \
   --secret OPENROUTER_API_KEY=@openrouter.key
@@ -216,13 +216,15 @@ The deploy returns once the container runs, after about 15 seconds. The review t
 vcontainer verify --session public-review
 ```
 
+Expected output, abbreviated (not recorded with this image):
+
 ```console
 public-review: VERIFIED
   ...
-  ✓ launch measured before pull: docker.io/terryxhx/pr-review-agent@sha256:fc20c8d1…
-  ✓ container sealed: manifest sha256:fc20c8d1…
+  ✓ launch measured before pull: docker.io/terryxhx/pr-review-agent@sha256:23c5696e…
+  ✓ container sealed: manifest sha256:23c5696e…
   state: Exited (exit code 0)
-  container: docker.io/terryxhx/pr-review-agent@sha256:fc20c8d1… env=["PR_URL=https://github.com/haoxxu/vContainer-review-demo/pull/1", "HEAD_SHA=688c61413e4e9bf830a58bab3e344d25582b8a33"] secrets={"OPENROUTER_API_KEY"}
+  container: docker.io/terryxhx/pr-review-agent@sha256:23c5696e… env=["PR_URL=https://github.com/haoxxu/vContainer-review-demo/pull/1", "HEAD_SHA=688c61413e4e9bf830a58bab3e344d25582b8a33"] secrets={"OPENROUTER_API_KEY"}
 ```
 
 The evidence names the agent's image, the pull request and the commit, and the exit code is part of the quote. Read the review from the serial console; `sed` skips the boot messages before it:
@@ -232,7 +234,7 @@ vcontainer logs --session public-review | sed -n '/^pr-review-agent:/,$p'
 ```
 
 <details>
-<summary>Recorded review output</summary>
+<summary>Recorded review output (from an earlier image, v2)</summary>
 
 ```console
 pr-review-agent: haoxxu/vContainer-review-demo#1 at 688c61413e4e, model anthropic/claude-sonnet-5.5
@@ -308,12 +310,13 @@ Create a [fine-grained personal access token](https://github.com/settings/person
 vcontainer run --session private-review
 ```
 
-Deploy the same image as in the previous example. The copy keeps the demo's commits, so `HEAD_SHA` does not change. With `GITHUB_TOKEN`, the agent posts its review to the pull request and prints nothing of the repository, and `--quiet` keeps even that off the serial console:
+Deploy the same image as in the previous example. The copy keeps the demo's commits, so `HEAD_SHA` does not change. With `OUTPUT=post` and `GITHUB_TOKEN`, the agent posts its review to the pull request and prints nothing of the repository, and `--quiet` keeps even that off the serial console:
 
 ```sh
-vcontainer deploy --session private-review docker.io/terryxhx/pr-review-agent@sha256:fc20c8d1369edacbd77405847d94efdca733df17b883a908d0db29e28865776b \
+vcontainer deploy --session private-review docker.io/terryxhx/pr-review-agent@sha256:23c5696ea6a1544e3d82025d91c3ad74ecce14638abcaa8c56c6ed85933e2aad \
   -e PR_URL=https://github.com/OWNER/review-demo/pull/1 \
   -e HEAD_SHA=688c61413e4e9bf830a58bab3e344d25582b8a33 \
+  -e OUTPUT=post \
   --secret OPENROUTER_API_KEY=@openrouter.key \
   --secret GITHUB_TOKEN=@github.key \
   --quiet
@@ -325,14 +328,16 @@ After a minute or two, verify the session:
 vcontainer verify --session private-review
 ```
 
+Expected output, abbreviated (not recorded with this image):
+
 ```console
 private-review: VERIFIED
   ...
   state: Exited (exit code 0)
-  container: docker.io/terryxhx/pr-review-agent@sha256:fc20c8d1… env=["PR_URL=https://github.com/OWNER/review-demo/pull/1", "HEAD_SHA=688c61413e4e9bf830a58bab3e344d25582b8a33"] secrets={"GITHUB_TOKEN", "OPENROUTER_API_KEY"}
+  container: docker.io/terryxhx/pr-review-agent@sha256:23c5696e… env=["PR_URL=https://github.com/OWNER/review-demo/pull/1", "HEAD_SHA=688c61413e4e9bf830a58bab3e344d25582b8a33", "OUTPUT=post"] secrets={"GITHUB_TOKEN", "OPENROUTER_API_KEY"}
 ```
 
-Both secret names are part of the evidence, so whoever checks the session can see that the agent had a GitHub token. The serial console shows the container start and exit, and nothing in between:
+`OUTPUT=post` and both secret names are part of the evidence, so whoever checks the session can see that the agent had a GitHub token and was set to post its review. The serial console shows the container start and exit, and nothing in between:
 
 ```sh
 vcontainer logs --session private-review | tail -n 2
