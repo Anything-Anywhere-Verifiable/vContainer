@@ -2,7 +2,7 @@
 
 To deploy your own agent with vContainer, you need:
 
-- **Your agent as a container:** a Dockerfile that builds a `linux/amd64` image. The agent and its filesystem must fit in the VM's RAM. You can start from the [OpenRouter demo](../examples/openrouter-agent/) if you do not have an image yet.
+- **Your agent as a container:** a Dockerfile that builds a `linux/amd64` image. The agent and its filesystem must fit in the VM's RAM. For a complete example, see the [pull request review agent](../examples/pr-review-agent/).
 - **A Google Cloud project:** billing enabled, permission to create images, buckets, VMs, networks, and firewall rules, and C3 quota in your chosen zone (the default is `us-central1-a`). This guide uses Artifact Registry to store your agent image.
 - **A Linux x86-64 build machine:** Python 3.9+, a native C toolchain, Git, Bash, and a running Docker daemon. The installer sets up Rust automatically; it needs `curl` and `sh` if rustup is missing.
 - **The Google Cloud CLI:** `gcloud` installed and access to your project.
@@ -10,7 +10,7 @@ To deploy your own agent with vContainer, you need:
 
 The CLI also runs on macOS. Build and publish vContainer's boot image on Linux first, then follow the [CLI-only setup](../README.md#cli-only-on-macos-or-another-linux-machine) on your Mac.
 
-To start with a ready-made workload, use [Deploy a container](deploy-a-container.md) or [Deploy an OpenRouter agent](deploy-an-openrouter-agent.md).
+To start with a ready-made workload, use [Deploy a container](deploy-a-container.md) or the [pull request review agent](../examples/pr-review-agent/README.md).
 
 ## 1. Install vContainer once
 
@@ -116,7 +116,7 @@ This protects the agent's memory from the cloud host. Requests and responses nee
 
 ## 6. Use and verify your agent
 
-The deploy command prints the VM's IP and port. Connect using your agent's client or API. For an agent that implements the demo's `POST /chat` endpoint, replace the example IP and run:
+The deploy command prints the VM's IP and port. Connect using your agent's client or API. For example, if your agent implements `POST /chat` with a JSON `message` field, replace the example IP and run:
 
 ```sh
 IP=203.0.113.7

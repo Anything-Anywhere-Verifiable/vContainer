@@ -144,4 +144,4 @@ This deletes the VM and its session firewall rule. The VM keeps billing even aft
 
 Each VM boot runs one container. To deploy another image, remove the session, choose a new `IMAGE`, then repeat steps 3 and 4. You do not need to rebuild the boot image.
 
-To deploy an agent next, follow [Deploy an OpenRouter agent](deploy-an-openrouter-agent.md) or [Deploy your own agent](deploy-your-agent.md).
+To deploy an agent next, try the [pull request review agent](../examples/pr-review-agent/README.md) or follow [Deploy your own agent](deploy-your-agent.md).
