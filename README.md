@@ -116,6 +116,10 @@ In the recorded demo, it found the three planted bugs and an additional cache pr
 
 For private code, set `OUTPUT=post` and provide a repository-scoped GitHub token; use `--quiet` to keep output off the serial console. The host does not see the container's output; GitHub, OpenRouter and the model's provider still receive the code. See [Review a private pull request](docs/review-a-private-pull-request.md). To deploy your own workload, follow [Deploy your own agent](docs/deploy-your-agent.md).
 
+## Agent example: private data analyst
+
+The included [data analyst](examples/data-analyst) is a service that teammates query about a dataset of support tickets sealed to the VM. Its three tools return only counts and averages, so neither the model provider nor the people asking see rows, names or emails, and the cloud host sees none of the data. Aggregates can still reveal facts about individuals across several questions, so this is not a statistical privacy guarantee. Teammates ask with `ask.py`, which verifies the session against the custodian's policy and pins the service's TLS certificate before it sends anything. Its published image needs no application build; see the [example](examples/data-analyst/README.md) for the commands.
+
 <a id="trust"></a>
 
 ## Security and limitations
