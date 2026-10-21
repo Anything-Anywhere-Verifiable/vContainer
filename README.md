@@ -40,7 +40,9 @@ vcontainer verify --session demo
 
 Look for `Hello from Docker!` in the logs. The terminal follows the evidence from machine identity to measured boot and the container launch. Each node advances only after its checks pass; the final receipt shows the complete boot measurements together:
 
-![Animated shell verification: machine identity, boot and container checks advance from pending to verified, followed by complete matching measurements and exit code 0.](docs/assets/hello-world-structured-verification.gif)
+<p align="center">
+  <img src="docs/assets/hello-world-structured-verification.gif" width="680" alt="Animated shell verification: machine identity, boot and container checks advance from pending to verified, followed by complete matching measurements and exit code 0.">
+</p>
 
 This terminal recording re-runs the verifier on signed evidence saved from the real Intel TDX test. See the [final receipt](docs/assets/hello-world-shell-verification.jpg), [failure view](docs/assets/hello-world-shell-rejected.jpg), or [full test transcript](docs/assets/hello-world-shell-output.txt). The test included a deployment rejected before launch with an incorrect policy. IP addresses are redacted and the cloud resources have been deleted. Add `--details` for full release and platform claims.
 
