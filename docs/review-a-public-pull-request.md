@@ -2,7 +2,11 @@
 
 The [pull request review agent](../examples/pr-review-agent) works through tools. It reviews one GitHub pull request at one commit: the model reads the diff and other text files of the repository, including unchanged ones, through five tools, with no shell, and finishes with a review. Its image is on Docker Hub, so nothing needs to be built. Here it reviews [pull request #1](https://github.com/haoxxu/vContainer-review-demo/pull/1) of a small demo repository, which adds a function with three deliberate bugs.
 
-Complete [setup](install.md) first. Save your OpenRouter API key in a file named `openrouter.key` that holds only the key, then start a session:
+Complete [setup](install.md) first.
+
+## Deploying the agent
+
+Save your OpenRouter API key in a file named `openrouter.key` that holds only the key, then start a session:
 
 ```sh
 vcontainer run --session public-review
@@ -19,7 +23,11 @@ vcontainer deploy --session public-review docker.io/terryxhx/pr-review-agent@sha
 
 With `OUTPUT` unset, the agent prints this public repository's review to the serial console. A `GITHUB_TOKEN` alone no longer requests posting; posting requires both `OUTPUT=post` and a token.
 
-The deploy returns once the container runs, after about 15 seconds. The review takes a minute or two; then verify the session again:
+The deploy returns once the container runs, after about 15 seconds. 
+
+## Verifying the container
+
+The review takes a minute or two; then verify the session again:
 
 ```sh
 vcontainer verify --session public-review
@@ -38,7 +46,11 @@ public-review: VERIFIED
 
 The manifest placeholder above is the selected `linux/amd64` image manifest; it can differ from the pinned digest if that digest names an image index.
 
-The evidence names the agent's image, the pull request and the commit, and the exit code is part of the quote. Read the review from the serial console; `sed` skips the boot messages before it:
+The evidence names the agent's image, the pull request and the commit, and the exit code is part of the quote. 
+
+## Obtaining the review
+
+Read the review from the serial console; `sed` skips the boot messages before it:
 
 ```sh
 vcontainer logs --session public-review | sed -n '/^pr-review-agent:/,$p'
@@ -71,6 +83,8 @@ In this run the agent found the three planted bugs and further problems with the
 </details>
 
 In v3, each model reply is limited to 8,000 tokens. Once OpenRouter reports that a run has used 1,000,000 tokens, the next turn is the last; this is a stopping point, not a hard cap, because the last turn adds tokens. A run also stops after at most 30 model turns, with exit code `4` if no review was submitted.
+
+## Shutting down
 
 The OpenRouter key is sealed to the VM, and the model never sees it: the agent calls OpenRouter itself and gives the model only its tools. Everything else here is public: the repository, the launch and the review on the serial console. OpenRouter and the model's provider see the code under review. To let someone else check the deployment, follow [Verify and share](verify-and-share.md) before cleanup. Otherwise, remove the VM to stop billing:
 

@@ -1,6 +1,12 @@
 # vContainer
 
+Ever want to quickly run a container or an AI agent in the cloud, but without your cloud provider seeing what you do?
+vContainer allows you to do so.
+
 vContainer runs **containers and AI agents in confidential VMs**, with **as little code as possible**. You can **verify the VM's boot image and recorded container launch** before authorizing execution.
+
+This project contains scripts to *easily deploy and verify any container 
+into a confidential VM*.  
 
 [![Code license: Apache-2.0](docs/assets/badges/license.svg)](LICENSE)
 [![Rust 1.95.0](docs/assets/badges/rust.svg)](rust-toolchain.toml)
@@ -9,7 +15,9 @@ vContainer runs **containers and AI agents in confidential VMs**, with **as litt
 
 An agent in the cloud holds API keys and often handles private data. On an ordinary VM, the cloud host can read both. A confidential VM keeps its memory encrypted from the host, and the hardware signs a quote of what the VM booted.
 
-You bring a container image and any secrets it needs. vContainer creates the VM, verifies what booted, delivers your secrets encrypted to that VM, and starts the container only after verifying its recorded launch. You can share a policy file so others can check the same evidence.
+You can pick any container image you want to deploy, and what secrets 
+you want that container to process.
+The vContainer suite creates the VM for you, verifies what booted, delivers your secrets encrypted to that VM, and starts the container only after verifying its recorded launch. You can share a policy file so others can check the same evidence.
 
 **Small by design.** Before your container starts, the guest runs only Linux and `/init`:
 
@@ -124,6 +132,11 @@ The included [data analyst](examples/data-analyst) is a service that teammates q
 
 <a id="trust"></a>
 
+## Scripts
+
+- [Installation](docs/install.md): prerequisites, macOS setup and build options.
+- [Command reference](docs/command-reference.md): CLI commands and configuration.
+
 ## Security and limitations
 
 Each VM boot runs one container, with its root filesystem in RAM. vContainer protects memory from the cloud host; you still trust the agent and its external services. It provides no outbound destination filtering or agent tool policy, and application TLS and authentication are your responsibility.
@@ -134,9 +147,6 @@ Secret values are encrypted. Launch settings, environment variables and secret n
 <a id="command-reference"></a>
 ## Documentation
 
-- [Installation](docs/install.md): prerequisites, macOS setup and build options.
-- [Command reference](docs/command-reference.md): CLI commands and configuration.
-- [Whitepaper](docs/whitepaper.md): evidence, implementation and security analysis.
 - [Boot image](image/README-image.md): kernel configuration and reproducible builds.
 
 ## License

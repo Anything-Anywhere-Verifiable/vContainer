@@ -2,7 +2,12 @@
 
 An internal service that answers questions about a sensitive dataset without showing anyone its rows. A data custodian, such as the security team, deploys it with a dataset of support tickets that holds customer names and emails. Teammates ask it questions over HTTPS, such as "Why did first response times get worse in September?", and get answers built from counts and averages.
 
-The agent is one file of Python with no dependencies, [agent.py](agent.py), and teammates ask with [ask.py](ask.py), which verifies the service first. [tickets.csv](tickets.csv) holds 310 synthetic tickets with fake customers.
+The agent is one Python file [agent.py](agent.py), and runs in the confidential VM.
+
+Teammates ask with [ask.py](ask.py), which verifies the service first. 
+
+For the purposes of this example, 
+we work on [tickets.csv](tickets.csv) which holds 310 synthetic tickets with fake customers.
 
 ## What leaves the VM
 
@@ -44,7 +49,7 @@ Each question is answered on its own: nothing is kept between questions, and the
 
 `TLS_CERT_SHA256` is part of the measured launch, so `vcontainer verify` shows which certificate the verified service holds.
 
-## Deploy it (the custodian)
+## Deploy it (executed by the custodian)
 
 The commands below deploy the image we publish, pinned by digest, so nothing needs to be built; to run your own build instead, see [Build your own image](#build-your-own-image). Run them from this directory, with your OpenRouter key in `openrouter.key`.
 
@@ -76,15 +81,15 @@ vcontainer verify --session analyst --export-policy analyst-policy.json
 
 Give teammates the session's IP address (from `vcontainer ls`), `analyst-policy.json`, `ask.py` and `api-token.key` through a channel you trust. The policy must come from you, not from the service.
 
-## Ask a question (a teammate)
+## Ask a question (executed by your teammates)
 
 With `vcontainer` installed, run `ask.py` with the custodian's policy, the token and the session's IP address. Replace `IP`:
 
 ```sh
-python3 ask.py --policy analyst-policy.json --token api-token.key IP
+python3 ask.py --policy analyst-policy.json --token api-token.key <IP>
 ```
 
-It first runs `vcontainer verify` against the policy and stops if that fails. It reads the certificate's fingerprint from the launch that the policy pins, and for each question it compares the server's certificate with it before sending the token. Then it asks for questions until you enter an empty line or `quit`, or press Ctrl-D; to ask one question only, add it after `IP`.
+This script runs `vcontainer verify` against the policy and stops if that fails. It reads the certificate's fingerprint from the launch that the policy pins, and for each question it compares the server's certificate with it before sending the token. Then it asks for questions until you enter an empty line or `quit`, or press Ctrl-D; to ask one question only, add it after `IP`.
 
 Recorded with Docker on the synthetic dataset, with the verification step replaced by a stub, abbreviated:
 
