@@ -1,0 +1,14 @@
+# Build environment for vcontainer: Rust (musl), Linux kernel and disk tools.
+# The base image is pinned by digest so builds are reproducible.
+FROM docker.io/library/rust:1.95-trixie@sha256:f49565f188ee00bc2a18dd418183f2c5f23ef7d6e691890517ed341a598f67c3
+ENV DEBIAN_FRONTEND=noninteractive
+# Debian packages come from a fixed snapshot, so the tools that shape measured
+# bytes (sgdisk, objtool's libelf, musl-gcc) do not change between builds.
+ARG SNAPSHOT=20261016T000000Z
+RUN rm -f /etc/apt/sources.list.d/debian.sources \
+    && printf 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/%s trixie main\ndeb [check-valid-until=no] https://snapshot.debian.org/archive/debian/%s trixie-updates main\ndeb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/%s trixie-security main\n' "$SNAPSHOT" "$SNAPSHOT" "$SNAPSHOT" > /etc/apt/sources.list
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        bc bison dosfstools flex gdisk libelf-dev mtools musl-tools xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+RUN rustup target add x86_64-unknown-linux-musl
+ENV CC_x86_64_unknown_linux_musl=musl-gcc

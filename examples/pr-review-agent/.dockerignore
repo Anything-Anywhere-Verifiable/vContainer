@@ -1,0 +1,3 @@
+# Only agent.py goes into the image; keep keys and other local files out of the build context.
+*
+!agent.py

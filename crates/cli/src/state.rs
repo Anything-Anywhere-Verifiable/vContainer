@@ -1,0 +1,299 @@
+//! Local state in ~/.config/vcontainer: the owner key, the published release
+//! and one file per session. A session file embeds the session's verification
+//! policy, which is also what a third party needs to verify it.
+
+use anyhow::{bail, ensure, Context, Result};
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::io::Write;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::path::{Path, PathBuf};
+use vcontainer_core::crypto::{self, SigningKey};
+
+/// A published boot image and its expected measurements (written by `vcontainer publish`).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Release {
+    /// GCE image name and the project it lives in.
+    pub image: String,
+    pub project: String,
+    pub pe_authenticode_sha384: String,
+    pub gpt_event_sha384: String,
+    /// The clean source commit the image was built from (build-info.json).
+    pub commit: Option<String>,
+}
+
+/// The GCE instance a quote must come from (TDX MROWNER is SHA-384 of these).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Instance {
+    pub id: u64,
+    pub project_number: u64,
+    pub zone: String,
+}
+
+/// Everything a verifier needs. Shareable: contains no secrets. Unknown fields
+/// are rejected, so a misspelled field cannot silently drop its check.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct Policy {
+    pub tee: String,
+    /// Owner public key, base64, exactly as in instance metadata.
+    pub owner: String,
+    pub release: Release,
+    pub instance: Instance,
+    /// The launch event payload (base64 of the exact bytes) once deployed.
+    pub launch: Option<String>,
+    pub min_tcb_eval_num: u32,
+    /// Lowest acceptable security version of Google's TDX firmware.
+    pub min_fw_svn: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Session {
+    pub name: String,
+    pub project: String,
+    pub zone: String,
+    pub ip: String,
+    /// Address range the session's firewall rule admits.
+    pub source: String,
+    /// Container ports of the launch, opened to `source`.
+    pub ports: Vec<u16>,
+    pub policy: Policy,
+}
+
+impl Session {
+    pub fn url(&self) -> String {
+        format!("http://{}:{}", self.ip, vcontainer_core::PORT)
+    }
+}
+
+pub fn dir() -> Result<PathBuf> {
+    let home = std::env::var("HOME").context("HOME is not set")?;
+    let d = std::env::var("VCONTAINER_HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(home).join(".config/vcontainer"));
+    fs::create_dir_all(d.join("sessions"))?;
+    Ok(d)
+}
+
+/// The owner key, created on first use (32-byte Ed25519 seed, mode 0600).
+pub fn owner_key() -> Result<SigningKey> {
+    let path = dir()?.join("owner.key");
+    if !path.exists() {
+        let mut f = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path)?;
+        std::io::Write::write_all(&mut f, &crypto::random::<32>())?;
+        eprintln!("created owner key {}", path.display());
+    }
+    let meta = fs::metadata(&path)?;
+    if meta.permissions().mode() & 0o077 != 0 {
+        bail!("{} must not be readable by others (chmod 600)", path.display());
+    }
+    let seed: [u8; 32] = fs::read(&path)?.try_into().map_err(|_| anyhow::anyhow!("{} is not a 32-byte key", path.display()))?;
+    Ok(SigningKey::from_bytes(&seed))
+}
+
+pub fn release() -> Result<Release> {
+    let path = dir()?.join("release.json");
+    let raw = fs::read(&path).with_context(|| {
+        format!("{} not found: build and publish the boot image first (scripts/build-image.sh, then `vcontainer publish`)", path.display())
+    })?;
+    Ok(serde_json::from_slice(&raw)?)
+}
+
+pub fn save_release(r: &Release) -> Result<()> {
+    atomic_write(&dir()?.join("release.json"), &serde_json::to_vec_pretty(r)?)
+}
+
+/// Keep the previous record intact until the complete replacement is durable.
+fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+    atomic_write_with(path, |file| file.write_all(bytes))
+}
+
+/// A guard also removes a partial temporary file during panic unwinding.
+struct TemporaryRecord(PathBuf);
+impl Drop for TemporaryRecord {
+    fn drop(&mut self) { let _ = fs::remove_file(&self.0); }
+}
+
+fn atomic_write_with(path: &Path, write: impl FnOnce(&mut fs::File) -> std::io::Result<()>) -> Result<()> {
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+    let directory = fs::File::open(parent).with_context(|| format!("open state directory {}", parent.display()))?;
+    let name = path.file_name().context("state path has no filename")?;
+    let mut temporary_name = std::ffi::OsString::from(".");
+    temporary_name.push(name);
+    temporary_name.push(format!(".{}.tmp", vcontainer_core::hex(&crypto::random::<16>())));
+    let temporary = parent.join(temporary_name);
+    let mut file = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temporary)
+        .with_context(|| format!("create temporary state record for {}", path.display()))?;
+    let cleanup = TemporaryRecord(temporary);
+    write(&mut file).with_context(|| format!("write state record {}", path.display()))?;
+    file.sync_all().with_context(|| format!("sync state record {}", path.display()))?;
+    drop(file);
+    fs::rename(&cleanup.0, path).with_context(|| format!("replace state record {}", path.display()))?;
+    // After rename, the new record is visible even if this final durability
+    // check fails; never report such an error as though the old file survived.
+    directory.sync_all().with_context(|| format!("state record {} was replaced, but syncing its directory failed", path.display()))?;
+    Ok(())
+}
+
+/// Session names are GCE instance names and part of firewall rule names.
+fn valid_session_name(name: &str) -> bool {
+    name.len() <= 40 && name.starts_with(|c: char| c.is_ascii_lowercase()) && !name.ends_with('-') && name.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+}
+
+fn session_path(name: &str) -> Result<PathBuf> {
+    ensure!(valid_session_name(name), "session names are up to 40 lowercase letters, digits and '-', starting with a letter and not ending with '-' (got {name:?})");
+    Ok(dir()?.join("sessions").join(format!("{name}.json")))
+}
+
+/// The session `name`, or None if it has no file. A file that cannot be read
+/// or parsed is an error: its VM may still exist.
+pub fn find_session(name: &str) -> Result<Option<Session>> {
+    let path = session_path(name)?;
+    match fs::read(&path) {
+        Ok(raw) => Ok(Some(serde_json::from_slice(&raw).with_context(|| format!("parse {}", path.display()))?)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("read {}", path.display())),
+    }
+}
+
+pub fn load_session(name: &str) -> Result<Session> {
+    find_session(name)?.with_context(|| format!("no session {name:?}; start it with `vcontainer run --session {name}`"))
+}
+
+pub fn save_session(s: &Session) -> Result<()> {
+    atomic_write(&session_path(&s.name)?, &serde_json::to_vec_pretty(s)?)
+}
+
+pub fn remove_session(name: &str) -> Result<()> {
+    let path = session_path(name)?;
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("remove session record {}", path.display())),
+    }
+}
+
+pub fn sessions() -> Result<Vec<Session>> {
+    let mut out = Vec::new();
+    for e in fs::read_dir(dir()?.join("sessions"))? {
+        let p = e?.path();
+        if p.extension().is_some_and(|x| x == "json") {
+            match serde_json::from_slice(&fs::read(&p)?) {
+                Ok(s) => out.push(s),
+                Err(e) => eprintln!("warning: unreadable session file {}: {e}", p.display()),
+            }
+        }
+    }
+    out.sort_by(|a: &Session, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestDirectory(PathBuf);
+    impl TestDirectory {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!("vcontainer-state-test-{}", vcontainer_core::hex(&crypto::random::<16>())));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+        fn assert_only_record(&self, path: &Path) {
+            let entries: Vec<_> = fs::read_dir(&self.0).unwrap().map(|entry| entry.unwrap().path()).collect();
+            assert_eq!(entries, vec![path.to_path_buf()], "temporary state files leaked");
+        }
+    }
+    impl Drop for TestDirectory {
+        fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+    }
+
+    #[test]
+    fn failed_write_keeps_the_previous_record_and_removes_partial_file() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("demo.json");
+        let old = br#"{"name":"demo","launch":"previous"}"#;
+        fs::write(&path, old).unwrap();
+        let result = atomic_write_with(&path, |file| {
+            file.write_all(b"{\"launch\":")?;
+            Err(std::io::Error::other("injected write failure"))
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read(&path).unwrap(), old);
+        directory.assert_only_record(&path);
+    }
+
+    #[test]
+    fn interrupted_write_keeps_the_previous_record_and_removes_partial_file() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("demo.json");
+        let old = br#"{"name":"demo","launch":"previous"}"#;
+        fs::write(&path, old).unwrap();
+        let interrupted = std::panic::catch_unwind(|| atomic_write_with(&path, |file| {
+            file.write_all(b"{\"launch\":")?;
+            panic!("injected interruption before commit");
+        }));
+        assert!(interrupted.is_err());
+        assert_eq!(fs::read(&path).unwrap(), old);
+        directory.assert_only_record(&path);
+    }
+
+    #[test]
+    fn replacement_is_not_visible_until_the_writer_finishes() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("release.json");
+        let old = br#"{"release":"previous"}"#;
+        let new = br#"{"release":"complete replacement"}"#;
+        fs::write(&path, old).unwrap();
+        atomic_write_with(&path, |file| {
+            file.write_all(&new[..8])?;
+            assert_eq!(fs::read(&path)?, old);
+            file.write_all(&new[8..])
+        }).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), new);
+        assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o077, 0);
+        directory.assert_only_record(&path);
+    }
+
+    #[test]
+    fn rename_failure_does_not_remove_the_destination_or_leave_a_temporary_file() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("demo.json");
+        fs::create_dir(&path).unwrap();
+        let marker = path.join("original");
+        fs::write(&marker, b"keep").unwrap();
+        assert!(atomic_write(&path, b"replacement").is_err());
+        assert_eq!(fs::read(marker).unwrap(), b"keep");
+        directory.assert_only_record(&path);
+    }
+
+    #[test]
+    fn session_names() {
+        let longest = "a".repeat(40);
+        for ok in ["a", "web-1", "a1-b2", longest.as_str()] {
+            assert!(valid_session_name(ok), "{ok}");
+        }
+        let too_long = "a".repeat(41);
+        for bad in ["", "1a", "-a", "a-", "Ab", "a_b", "a.b", "a/b", "a b", too_long.as_str()] {
+            assert!(!valid_session_name(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn policy_fields() {
+        let release = Release { image: "i".into(), project: "p".into(), pe_authenticode_sha384: "00".into(), gpt_event_sha384: "00".into(), commit: None };
+        let instance = Instance { id: 1, project_number: 2, zone: "z".into() };
+        let p = Policy { tee: "tdx".into(), owner: "o".into(), release, instance, launch: None, min_tcb_eval_num: 20, min_fw_svn: 2 };
+        let v = serde_json::to_value(&p).unwrap();
+        assert!(serde_json::from_value::<Policy>(v.clone()).unwrap().launch.is_none());
+        let mut without_launch = v.clone();
+        without_launch.as_object_mut().unwrap().remove("launch");
+        assert!(serde_json::from_value::<Policy>(without_launch).unwrap().launch.is_none());
+        let mut unknown = v.clone();
+        unknown["config"] = "e30=".into();
+        assert!(serde_json::from_value::<Policy>(unknown).is_err());
+        for required in ["instance", "min_fw_svn"] {
+            let mut missing = v.clone();
+            missing.as_object_mut().unwrap().remove(required);
+            assert!(serde_json::from_value::<Policy>(missing).is_err(), "{required}");
+        }
+    }
+}

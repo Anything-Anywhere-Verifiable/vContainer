@@ -1,0 +1,311 @@
+ticket_id,created,customer_name,customer_email,product,channel,priority,team,status,first_response_hours,resolution_hours
+T-0010,2026-07-02,Lucas Ivanova,lucas.ivanova@example.com,Billing,email,normal,Billing ops,closed,4.2,38.8
+T-0034,2026-07-02,Kofi Lopez,kofi.lopez@example.com,Mobile app,chat,low,Tier 1,closed,1.9,20.8
+T-0041,2026-07-02,Priya Rossi,priya.rossi@example.com,Web app,email,urgent,Tier 2,closed,6.6,21.5
+T-0057,2026-07-02,Sofia Mensah,sofia.mensah@example.com,Web app,phone,normal,Tier 1,closed,0.4,17.1
+T-0083,2026-07-02,Diego Haddad,diego.haddad@example.com,Mobile app,email,low,Tier 1,closed,4.6,51.4
+T-0019,2026-07-03,Lucas Moreau,lucas.moreau@example.com,Web app,email,normal,Tier 1,closed,5.6,41.4
+T-0050,2026-07-03,Mateo Mensah,mateo.mensah@example.com,Integrations,email,high,Tier 2,closed,2.8,16.9
+T-0003,2026-07-04,Lucas Okafor,lucas.okafor@example.com,Integrations,email,low,Tier 1,closed,7.0,11.3
+T-0013,2026-07-04,Hana Sato,hana.sato@example.com,Integrations,email,low,Tier 1,closed,6.4,40.1
+T-0085,2026-07-04,Liam Okafor,liam.okafor@example.com,Mobile app,chat,normal,Tier 1,closed,0.7,41.8
+T-0054,2026-07-05,Lucas Cohen,lucas.cohen@example.com,Web app,chat,normal,Tier 1,closed,0.6,9.3
+T-0064,2026-07-05,Kenji Moreau,kenji.moreau@example.com,Billing,email,urgent,Billing ops,closed,2.5,38.8
+T-0069,2026-07-05,Noah Silva,noah.silva@example.com,Mobile app,email,urgent,Tier 2,closed,1.6,35.5
+T-0075,2026-07-06,Leila Moreau,leila.moreau@example.com,Web app,phone,normal,Tier 1,closed,0.5,21.2
+T-0008,2026-07-07,Leila Fischer,leila.fischer@example.com,Mobile app,email,high,Tier 2,closed,4.4,30.1
+T-0021,2026-07-07,Ava Patel,ava.patel@example.com,Integrations,email,high,Tier 2,closed,6.0,33.4
+T-0068,2026-07-07,Noah Okafor,noah.okafor@example.com,Web app,chat,normal,Tier 1,closed,0.3,20.9
+T-0084,2026-07-07,Noah Larsen,noah.larsen@example.com,Billing,chat,urgent,Billing ops,closed,1.1,25.1
+T-0018,2026-07-08,Hana Novak,hana.novak@example.com,Billing,email,normal,Billing ops,closed,10.0,18.9
+T-0015,2026-07-09,Ava Novak,ava.novak@example.com,Integrations,email,normal,Tier 1,closed,9.8,39.8
+T-0039,2026-07-09,Sofia Cohen,sofia.cohen@example.com,Integrations,email,low,Tier 1,closed,6.6,36.4
+T-0070,2026-07-09,Yara Nguyen,yara.nguyen@example.com,Web app,email,low,Tier 1,closed,7.2,33.2
+T-0038,2026-07-10,Noah Okafor,noah.okafor@example.com,Integrations,email,high,Tier 2,closed,7.6,32.0
+T-0055,2026-07-10,Leila Kim,leila.kim@example.com,Mobile app,email,low,Tier 1,closed,9.8,37.2
+T-0020,2026-07-11,Ravi Nguyen,ravi.nguyen@example.com,Mobile app,chat,high,Tier 2,closed,1.1,41.0
+T-0023,2026-07-11,Leila Rossi,leila.rossi@example.com,Integrations,email,normal,Tier 1,closed,15.2,20.8
+T-0024,2026-07-11,Mateo Cohen,mateo.cohen@example.com,Integrations,chat,urgent,Tier 2,closed,0.7,31.9
+T-0029,2026-07-11,Priya Silva,priya.silva@example.com,Mobile app,email,urgent,Tier 2,closed,2.9,13.5
+T-0004,2026-07-12,Ivan Nguyen,ivan.nguyen@example.com,Mobile app,chat,normal,Tier 1,closed,0.8,7.6
+T-0009,2026-07-12,Amara Ivanova,amara.ivanova@example.com,Billing,email,high,Billing ops,closed,10.8,40.2
+T-0060,2026-07-12,Noah Rossi,noah.rossi@example.com,Integrations,chat,high,Tier 2,closed,1.8,15.8
+T-0061,2026-07-12,Elif Kim,elif.kim@example.com,Integrations,chat,low,Tier 1,closed,1.8,13.1
+T-0073,2026-07-12,Chen Brennan,chen.brennan@example.com,Integrations,phone,low,Tier 1,closed,0.6,26.4
+T-0074,2026-07-12,Diego Rossi,diego.rossi@example.com,Integrations,email,normal,Tier 1,closed,7.5,44.8
+T-0076,2026-07-12,Mateo Okafor,mateo.okafor@example.com,Mobile app,chat,normal,Tier 1,closed,1.6,45.8
+T-0002,2026-07-13,Hana Nguyen,hana.nguyen@example.com,Billing,email,low,Billing ops,closed,9.6,17.1
+T-0086,2026-07-13,Ava Lopez,ava.lopez@example.com,Mobile app,chat,high,Tier 2,closed,1.8,37.0
+T-0056,2026-07-14,Ava Okafor,ava.okafor@example.com,Mobile app,chat,low,Tier 1,closed,2.2,36.4
+T-0066,2026-07-14,Priya Okafor,priya.okafor@example.com,Web app,email,normal,Tier 1,closed,6.2,11.1
+T-0049,2026-07-15,Diego Nguyen,diego.nguyen@example.com,Mobile app,chat,normal,Tier 1,closed,0.8,29.9
+T-0017,2026-07-16,Ivan Moreau,ivan.moreau@example.com,Billing,phone,high,Billing ops,closed,0.6,31.9
+T-0040,2026-07-16,Ravi Garcia,ravi.garcia@example.com,Billing,chat,low,Billing ops,closed,1.2,18.3
+T-0046,2026-07-16,Diego Garcia,diego.garcia@example.com,Mobile app,chat,high,Tier 2,closed,1.1,40.8
+T-0065,2026-07-16,Elif Brennan,elif.brennan@example.com,Mobile app,chat,urgent,Tier 2,closed,0.5,42.0
+T-0077,2026-07-16,Diego Fischer,diego.fischer@example.com,Web app,chat,urgent,Tier 2,closed,1.2,46.7
+T-0047,2026-07-17,Diego Mensah,diego.mensah@example.com,Mobile app,chat,normal,Tier 1,closed,2.9,50.0
+T-0001,2026-07-18,Leila Cohen,leila.cohen@example.com,Integrations,chat,low,Tier 1,closed,0.9,32.4
+T-0026,2026-07-18,Zoe Haddad,zoe.haddad@example.com,Web app,email,normal,Tier 1,closed,5.3,40.8
+T-0071,2026-07-18,Ravi Ivanova,ravi.ivanova@example.com,Integrations,email,low,Tier 1,closed,6.5,9.4
+T-0081,2026-07-18,Ava Fischer,ava.fischer@example.com,Integrations,chat,normal,Tier 1,closed,1.8,34.9
+T-0031,2026-07-19,Noah Nguyen,noah.nguyen@example.com,Mobile app,phone,normal,Tier 1,closed,1.2,25.2
+T-0044,2026-07-19,Kofi Moreau,kofi.moreau@example.com,Billing,email,normal,Billing ops,closed,22.3,65.4
+T-0082,2026-07-19,Ava Sato,ava.sato@example.com,Mobile app,email,normal,Tier 1,closed,3.7,25.1
+T-0090,2026-07-19,Ivan Larsen,ivan.larsen@example.com,Integrations,email,low,Tier 1,closed,6.2,34.2
+T-0016,2026-07-20,Lucas Moreau,lucas.moreau@example.com,Mobile app,email,low,Tier 1,closed,6.3,36.1
+T-0037,2026-07-20,Mateo Fischer,mateo.fischer@example.com,Billing,chat,low,Billing ops,closed,1.5,15.8
+T-0022,2026-07-21,Lucas Sato,lucas.sato@example.com,Web app,email,normal,Tier 1,closed,4.6,48.4
+T-0058,2026-07-21,Priya Moreau,priya.moreau@example.com,Web app,email,normal,Tier 1,closed,20.4,53.0
+T-0006,2026-07-22,Lucas Novak,lucas.novak@example.com,Integrations,chat,normal,Tier 1,closed,0.8,31.3
+T-0035,2026-07-22,Kenji Larsen,kenji.larsen@example.com,Web app,chat,low,Tier 1,closed,1.2,6.1
+T-0043,2026-07-22,Kofi Brennan,kofi.brennan@example.com,Billing,chat,high,Billing ops,closed,1.1,19.3
+T-0053,2026-07-22,Diego Nguyen,diego.nguyen@example.com,Mobile app,chat,normal,Tier 1,closed,1.0,20.8
+T-0063,2026-07-22,Tomas Brennan,tomas.brennan@example.com,Web app,email,normal,Tier 1,closed,8.5,14.5
+T-0007,2026-07-23,Ines Lopez,ines.lopez@example.com,Billing,chat,urgent,Billing ops,closed,0.3,5.4
+T-0072,2026-07-23,Diego Kim,diego.kim@example.com,Billing,email,normal,Billing ops,closed,5.4,25.6
+T-0032,2026-07-24,Omar Nguyen,omar.nguyen@example.com,Mobile app,chat,high,Tier 2,closed,1.3,7.6
+T-0051,2026-07-24,Tomas Patel,tomas.patel@example.com,Mobile app,chat,high,Tier 2,closed,2.3,19.2
+T-0052,2026-07-24,Hana Garcia,hana.garcia@example.com,Billing,email,normal,Billing ops,closed,12.4,30.5
+T-0078,2026-07-24,Mia Moreau,mia.moreau@example.com,Web app,email,urgent,Tier 2,closed,2.5,41.8
+T-0088,2026-07-24,Mateo Garcia,mateo.garcia@example.com,Web app,email,normal,Tier 1,closed,7.8,51.4
+T-0048,2026-07-25,Sofia Larsen,sofia.larsen@example.com,Web app,phone,low,Tier 1,closed,1.2,48.5
+T-0067,2026-07-25,Omar Mensah,omar.mensah@example.com,Web app,email,normal,Tier 1,closed,7.1,42.2
+T-0080,2026-07-25,Kofi Nguyen,kofi.nguyen@example.com,Integrations,email,urgent,Tier 2,closed,1.3,31.1
+T-0012,2026-07-26,Ines Rossi,ines.rossi@example.com,Billing,chat,high,Billing ops,closed,2.0,36.7
+T-0027,2026-07-26,Noah Kim,noah.kim@example.com,Billing,email,high,Billing ops,closed,8.4,35.6
+T-0033,2026-07-26,Lucas Garcia,lucas.garcia@example.com,Web app,email,high,Tier 2,closed,11.3,33.9
+T-0036,2026-07-27,Zoe Okafor,zoe.okafor@example.com,Mobile app,email,high,Tier 2,closed,8.9,36.7
+T-0079,2026-07-27,Elif Rossi,elif.rossi@example.com,Integrations,chat,normal,Tier 1,closed,1.3,23.0
+T-0089,2026-07-27,Nora Patel,nora.patel@example.com,Billing,chat,low,Billing ops,closed,1.1,37.6
+T-0005,2026-07-28,Kenji Lopez,kenji.lopez@example.com,Integrations,email,normal,Tier 1,closed,5.5,8.2
+T-0014,2026-07-28,Mia Kim,mia.kim@example.com,Integrations,chat,normal,Tier 1,closed,0.8,45.1
+T-0011,2026-07-29,Lucas Fischer,lucas.fischer@example.com,Mobile app,chat,normal,Tier 1,closed,0.5,35.2
+T-0030,2026-07-29,Kofi Ivanova,kofi.ivanova@example.com,Mobile app,chat,normal,Tier 1,closed,0.9,41.0
+T-0045,2026-07-29,Kofi Fischer,kofi.fischer@example.com,Mobile app,phone,urgent,Tier 2,closed,0.1,45.7
+T-0025,2026-07-30,Ravi Kim,ravi.kim@example.com,Integrations,email,low,Tier 1,closed,7.9,40.7
+T-0059,2026-07-30,Ava Novak,ava.novak@example.com,Integrations,email,urgent,Tier 2,closed,3.9,39.4
+T-0087,2026-07-30,Mateo Smith,mateo.smith@example.com,Web app,email,normal,Tier 1,closed,4.5,24.7
+T-0028,2026-07-31,Mia Smith,mia.smith@example.com,Integrations,email,normal,Tier 1,closed,10.7,56.0
+T-0042,2026-07-31,Mateo Novak,mateo.novak@example.com,Web app,email,normal,Tier 1,closed,7.8,15.8
+T-0062,2026-07-31,Ines Brennan,ines.brennan@example.com,Billing,email,urgent,Billing ops,closed,2.5,33.5
+T-0113,2026-08-01,Noah Patel,noah.patel@example.com,Integrations,email,low,Tier 1,closed,8.8,18.5
+T-0138,2026-08-01,Ivan Lopez,ivan.lopez@example.com,Web app,phone,normal,Tier 1,closed,0.4,26.3
+T-0148,2026-08-01,Amara Rossi,amara.rossi@example.com,Web app,chat,normal,Tier 1,closed,1.5,28.2
+T-0160,2026-08-01,Elif Okafor,elif.okafor@example.com,Billing,email,normal,Billing ops,closed,31.7,54.9
+T-0129,2026-08-02,Yara Brennan,yara.brennan@example.com,Web app,chat,normal,Tier 1,closed,0.9,48.1
+T-0132,2026-08-02,Liam Brennan,liam.brennan@example.com,Integrations,email,urgent,Tier 2,closed,3.6,18.6
+T-0135,2026-08-02,Chen Okafor,chen.okafor@example.com,Web app,chat,high,Tier 2,closed,2.0,26.9
+T-0166,2026-08-02,Yara Garcia,yara.garcia@example.com,Web app,email,high,Tier 2,closed,3.5,40.4
+T-0175,2026-08-02,Leila Brennan,leila.brennan@example.com,Billing,email,low,Billing ops,closed,14.5,19.3
+T-0096,2026-08-03,Tomas Fischer,tomas.fischer@example.com,Mobile app,phone,low,Tier 1,closed,0.4,15.8
+T-0147,2026-08-03,Sofia Kim,sofia.kim@example.com,Web app,email,normal,Tier 1,closed,4.9,26.6
+T-0093,2026-08-04,Kofi Fischer,kofi.fischer@example.com,Mobile app,chat,normal,Tier 1,closed,1.4,5.5
+T-0109,2026-08-04,Diego Haddad,diego.haddad@example.com,Web app,email,normal,Tier 1,closed,5.7,42.0
+T-0125,2026-08-04,Elif Garcia,elif.garcia@example.com,Integrations,phone,normal,Tier 1,closed,0.5,16.4
+T-0184,2026-08-04,Tomas Sato,tomas.sato@example.com,Integrations,chat,normal,Tier 1,closed,0.9,3.6
+T-0092,2026-08-05,Elif Patel,elif.patel@example.com,Mobile app,chat,high,Tier 2,closed,0.6,47.7
+T-0120,2026-08-05,Omar Okafor,omar.okafor@example.com,Mobile app,email,normal,Tier 1,closed,7.1,25.4
+T-0143,2026-08-05,Amara Brennan,amara.brennan@example.com,Mobile app,email,urgent,Tier 2,closed,2.1,7.9
+T-0101,2026-08-06,Hana Novak,hana.novak@example.com,Web app,email,low,Tier 1,closed,6.9,27.3
+T-0106,2026-08-06,Leila Rossi,leila.rossi@example.com,Billing,email,normal,Billing ops,closed,3.6,32.2
+T-0122,2026-08-06,Yara Garcia,yara.garcia@example.com,Mobile app,email,urgent,Tier 2,closed,5.3,15.3
+T-0137,2026-08-06,Hana Haddad,hana.haddad@example.com,Web app,email,high,Tier 2,closed,11.1,54.6
+T-0156,2026-08-06,Elif Sato,elif.sato@example.com,Integrations,chat,high,Tier 2,closed,0.7,17.7
+T-0174,2026-08-06,Yara Tanaka,yara.tanaka@example.com,Billing,chat,normal,Billing ops,closed,1.0,41.4
+T-0185,2026-08-06,Priya Tanaka,priya.tanaka@example.com,Integrations,chat,normal,Tier 1,closed,0.7,26.5
+T-0097,2026-08-07,Liam Lopez,liam.lopez@example.com,Mobile app,chat,low,Tier 1,closed,0.9,32.1
+T-0099,2026-08-07,Leila Moreau,leila.moreau@example.com,Web app,chat,low,Tier 1,closed,1.3,34.9
+T-0158,2026-08-07,Amara Patel,amara.patel@example.com,Web app,chat,urgent,Tier 2,closed,0.3,39.4
+T-0107,2026-08-08,Tomas Garcia,tomas.garcia@example.com,Mobile app,email,high,Tier 2,closed,5.8,17.3
+T-0149,2026-08-08,Omar Haddad,omar.haddad@example.com,Web app,email,normal,Tier 1,closed,5.8,20.5
+T-0152,2026-08-08,Ines Haddad,ines.haddad@example.com,Integrations,chat,normal,Tier 1,closed,0.9,41.2
+T-0169,2026-08-08,Ravi Kim,ravi.kim@example.com,Web app,email,normal,Tier 1,closed,7.1,51.6
+T-0157,2026-08-09,Lucas Kim,lucas.kim@example.com,Billing,email,urgent,Billing ops,closed,3.6,24.1
+T-0124,2026-08-11,Liam Silva,liam.silva@example.com,Mobile app,email,normal,Tier 1,closed,10.1,18.5
+T-0126,2026-08-11,Priya Haddad,priya.haddad@example.com,Mobile app,email,normal,Tier 1,closed,11.7,19.4
+T-0145,2026-08-11,Priya Lopez,priya.lopez@example.com,Integrations,email,high,Tier 2,closed,3.6,31.6
+T-0150,2026-08-11,Liam Okafor,liam.okafor@example.com,Mobile app,chat,urgent,Tier 2,closed,0.3,18.7
+T-0167,2026-08-11,Ava Fischer,ava.fischer@example.com,Mobile app,email,high,Tier 2,closed,5.6,11.1
+T-0111,2026-08-12,Mia Lopez,mia.lopez@example.com,Mobile app,chat,urgent,Tier 2,closed,0.5,29.9
+T-0112,2026-08-12,Mateo Fischer,mateo.fischer@example.com,Web app,chat,low,Tier 1,closed,1.4,28.3
+T-0114,2026-08-12,Diego Silva,diego.silva@example.com,Web app,chat,normal,Tier 1,closed,0.8,17.2
+T-0141,2026-08-12,Ines Tanaka,ines.tanaka@example.com,Integrations,email,normal,Tier 1,closed,4.9,27.3
+T-0102,2026-08-13,Yara Smith,yara.smith@example.com,Integrations,email,normal,Tier 1,closed,8.2,43.3
+T-0153,2026-08-13,Ivan Smith,ivan.smith@example.com,Integrations,chat,urgent,Tier 2,closed,0.2,21.3
+T-0176,2026-08-13,Chen Tanaka,chen.tanaka@example.com,Billing,chat,high,Billing ops,closed,2.0,13.5
+T-0179,2026-08-13,Liam Rossi,liam.rossi@example.com,Billing,email,high,Billing ops,closed,2.3,40.5
+T-0128,2026-08-14,Kenji Kim,kenji.kim@example.com,Web app,chat,low,Tier 1,closed,1.2,15.4
+T-0171,2026-08-14,Ines Smith,ines.smith@example.com,Web app,chat,high,Tier 2,closed,0.7,42.2
+T-0105,2026-08-15,Ines Novak,ines.novak@example.com,Integrations,email,low,Tier 1,closed,3.8,34.5
+T-0103,2026-08-16,Nora Moreau,nora.moreau@example.com,Mobile app,chat,high,Tier 2,closed,2.0,17.4
+T-0115,2026-08-16,Liam Tanaka,liam.tanaka@example.com,Web app,email,normal,Tier 1,closed,5.0,21.3
+T-0151,2026-08-16,Ava Novak,ava.novak@example.com,Web app,chat,high,Tier 2,closed,0.6,4.7
+T-0100,2026-08-17,Zoe Larsen,zoe.larsen@example.com,Web app,chat,urgent,Tier 2,closed,0.4,17.8
+T-0116,2026-08-17,Diego Tanaka,diego.tanaka@example.com,Web app,chat,normal,Tier 1,closed,0.9,42.9
+T-0127,2026-08-17,Kofi Kim,kofi.kim@example.com,Web app,chat,normal,Tier 1,closed,0.8,31.1
+T-0172,2026-08-17,Leila Kim,leila.kim@example.com,Integrations,email,low,Tier 1,closed,3.3,17.3
+T-0181,2026-08-17,Leila Mensah,leila.mensah@example.com,Mobile app,chat,normal,Tier 1,closed,0.8,39.4
+T-0119,2026-08-18,Lucas Larsen,lucas.larsen@example.com,Web app,chat,high,Tier 2,closed,0.6,27.9
+T-0146,2026-08-18,Mia Novak,mia.novak@example.com,Integrations,chat,high,Tier 2,closed,0.8,48.5
+T-0162,2026-08-18,Zoe Moreau,zoe.moreau@example.com,Integrations,email,high,Tier 2,closed,3.1,36.0
+T-0139,2026-08-19,Ava Larsen,ava.larsen@example.com,Integrations,chat,normal,Tier 1,closed,1.6,35.0
+T-0155,2026-08-19,Amara Lopez,amara.lopez@example.com,Billing,email,normal,Billing ops,closed,7.8,16.3
+T-0168,2026-08-19,Nora Smith,nora.smith@example.com,Mobile app,email,urgent,Tier 2,closed,2.0,40.4
+T-0178,2026-08-19,Tomas Tanaka,tomas.tanaka@example.com,Mobile app,email,high,Tier 2,closed,5.7,17.8
+T-0117,2026-08-20,Chen Cohen,chen.cohen@example.com,Billing,email,high,Billing ops,closed,6.5,38.6
+T-0118,2026-08-20,Hana Okafor,hana.okafor@example.com,Mobile app,email,normal,Tier 1,closed,5.4,9.8
+T-0159,2026-08-20,Mia Sato,mia.sato@example.com,Integrations,chat,low,Tier 1,closed,1.1,8.2
+T-0164,2026-08-20,Sofia Cohen,sofia.cohen@example.com,Mobile app,chat,normal,Tier 1,closed,0.9,41.0
+T-0173,2026-08-20,Sofia Garcia,sofia.garcia@example.com,Mobile app,email,low,Tier 1,closed,11.2,41.0
+T-0123,2026-08-21,Zoe Moreau,zoe.moreau@example.com,Billing,email,normal,Billing ops,closed,4.9,25.5
+T-0095,2026-08-22,Lucas Kim,lucas.kim@example.com,Integrations,chat,normal,Tier 1,closed,1.3,29.1
+T-0104,2026-08-22,Ravi Moreau,ravi.moreau@example.com,Mobile app,email,normal,Tier 1,closed,6.0,48.0
+T-0094,2026-08-23,Noah Patel,noah.patel@example.com,Web app,chat,low,Tier 1,closed,1.2,30.0
+T-0170,2026-08-23,Nora Nguyen,nora.nguyen@example.com,Billing,chat,normal,Billing ops,closed,0.6,8.5
+T-0091,2026-08-24,Kofi Tanaka,kofi.tanaka@example.com,Mobile app,email,normal,Tier 1,closed,7.6,51.6
+T-0134,2026-08-24,Ravi Ivanova,ravi.ivanova@example.com,Billing,phone,normal,Billing ops,closed,0.5,37.4
+T-0180,2026-08-24,Hana Okafor,hana.okafor@example.com,Web app,email,urgent,Tier 2,closed,2.2,34.5
+T-0130,2026-08-25,Leila Brennan,leila.brennan@example.com,Web app,chat,high,Tier 2,closed,1.8,45.5
+T-0163,2026-08-25,Hana Smith,hana.smith@example.com,Billing,email,normal,Billing ops,closed,11.0,14.8
+T-0165,2026-08-25,Tomas Moreau,tomas.moreau@example.com,Web app,phone,normal,Tier 1,closed,0.6,11.9
+T-0182,2026-08-25,Ines Garcia,ines.garcia@example.com,Integrations,email,normal,Tier 1,closed,5.2,14.2
+T-0140,2026-08-26,Ava Garcia,ava.garcia@example.com,Billing,chat,low,Billing ops,closed,0.8,19.9
+T-0098,2026-08-27,Kofi Nguyen,kofi.nguyen@example.com,Mobile app,email,normal,Tier 1,closed,2.9,33.2
+T-0108,2026-08-27,Ravi Brennan,ravi.brennan@example.com,Web app,phone,normal,Tier 1,closed,0.5,33.4
+T-0136,2026-08-27,Leila Kim,leila.kim@example.com,Integrations,chat,normal,Tier 1,closed,1.3,22.4
+T-0110,2026-08-28,Tomas Lopez,tomas.lopez@example.com,Web app,chat,urgent,Tier 2,closed,0.2,44.0
+T-0121,2026-08-28,Mia Fischer,mia.fischer@example.com,Integrations,email,low,Tier 1,closed,6.9,34.9
+T-0142,2026-08-28,Elif Mensah,elif.mensah@example.com,Web app,email,normal,Tier 1,closed,4.2,34.8
+T-0161,2026-08-29,Ines Fischer,ines.fischer@example.com,Billing,chat,low,Billing ops,closed,1.3,31.1
+T-0177,2026-08-29,Tomas Larsen,tomas.larsen@example.com,Integrations,email,high,Tier 2,closed,8.2,47.2
+T-0133,2026-08-30,Nora Mensah,nora.mensah@example.com,Mobile app,email,high,Tier 2,closed,3.7,9.1
+T-0154,2026-08-30,Ines Tanaka,ines.tanaka@example.com,Mobile app,email,normal,Tier 1,closed,10.3,15.6
+T-0131,2026-08-31,Priya Tanaka,priya.tanaka@example.com,Mobile app,chat,low,Tier 1,closed,0.8,39.4
+T-0144,2026-08-31,Chen Mensah,chen.mensah@example.com,Web app,email,high,Tier 2,closed,6.7,33.2
+T-0183,2026-08-31,Lucas Garcia,lucas.garcia@example.com,Mobile app,phone,normal,Tier 1,closed,0.3,47.4
+T-0216,2026-09-01,Ava Patel,ava.patel@example.com,Integrations,phone,high,Tier 2,closed,0.6,38.4
+T-0224,2026-09-01,Zoe Rossi,zoe.rossi@example.com,Billing,phone,normal,Billing ops,closed,1.0,33.9
+T-0278,2026-09-01,Leila Patel,leila.patel@example.com,Integrations,chat,low,Tier 1,closed,0.2,24.7
+T-0200,2026-09-02,Liam Nguyen,liam.nguyen@example.com,Mobile app,chat,low,Tier 1,closed,0.6,24.3
+T-0231,2026-09-02,Ines Tanaka,ines.tanaka@example.com,Web app,chat,normal,Tier 1,closed,2.5,39.1
+T-0235,2026-09-02,Omar Ivanova,omar.ivanova@example.com,Mobile app,phone,normal,Tier 1,closed,1.6,43.0
+T-0294,2026-09-02,Ines Silva,ines.silva@example.com,Web app,chat,low,Tier 1,closed,0.7,46.6
+T-0305,2026-09-02,Diego Smith,diego.smith@example.com,Integrations,chat,normal,Tier 1,closed,1.1,30.4
+T-0223,2026-09-03,Nora Fischer,nora.fischer@example.com,Billing,phone,low,Billing ops,closed,2.8,13.1
+T-0228,2026-09-03,Kenji Cohen,kenji.cohen@example.com,Billing,email,high,Billing ops,closed,43.5,99.2
+T-0230,2026-09-03,Kofi Moreau,kofi.moreau@example.com,Billing,phone,urgent,Billing ops,closed,0.9,34.6
+T-0243,2026-09-03,Omar Kim,omar.kim@example.com,Billing,chat,high,Billing ops,closed,3.3,11.3
+T-0213,2026-09-04,Diego Mensah,diego.mensah@example.com,Integrations,email,normal,Tier 1,closed,5.7,12.4
+T-0254,2026-09-04,Lucas Kim,lucas.kim@example.com,Integrations,email,normal,Tier 1,closed,5.7,47.3
+T-0282,2026-09-04,Ava Patel,ava.patel@example.com,Mobile app,chat,normal,Tier 1,closed,1.2,14.2
+T-0303,2026-09-04,Kofi Fischer,kofi.fischer@example.com,Web app,email,low,Tier 1,closed,4.5,27.4
+T-0309,2026-09-04,Mateo Tanaka,mateo.tanaka@example.com,Mobile app,chat,low,Tier 1,closed,0.5,35.8
+T-0198,2026-09-05,Yara Garcia,yara.garcia@example.com,Billing,chat,normal,Billing ops,closed,2.7,8.0
+T-0222,2026-09-05,Ravi Kim,ravi.kim@example.com,Billing,email,urgent,Billing ops,closed,12.4,53.0
+T-0245,2026-09-05,Tomas Ivanova,tomas.ivanova@example.com,Mobile app,email,low,Tier 1,closed,2.7,32.6
+T-0304,2026-09-05,Elif Okafor,elif.okafor@example.com,Integrations,email,normal,Tier 1,closed,5.2,38.9
+T-0186,2026-09-06,Kofi Lopez,kofi.lopez@example.com,Integrations,email,normal,Tier 1,closed,7.2,13.9
+T-0188,2026-09-06,Ava Smith,ava.smith@example.com,Mobile app,email,high,Tier 2,closed,5.0,15.6
+T-0262,2026-09-06,Mateo Moreau,mateo.moreau@example.com,Integrations,email,low,Tier 1,closed,6.2,39.3
+T-0280,2026-09-06,Tomas Mensah,tomas.mensah@example.com,Mobile app,email,low,Tier 1,closed,4.1,39.0
+T-0189,2026-09-07,Omar Sato,omar.sato@example.com,Mobile app,chat,normal,Tier 1,closed,1.1,10.9
+T-0266,2026-09-07,Ivan Mensah,ivan.mensah@example.com,Billing,chat,low,Billing ops,closed,1.8,74.2
+T-0272,2026-09-07,Ivan Novak,ivan.novak@example.com,Mobile app,email,normal,Tier 1,closed,11.0,49.9
+T-0306,2026-09-07,Mateo Brennan,mateo.brennan@example.com,Billing,phone,normal,Billing ops,closed,1.5,59.5
+T-0195,2026-09-08,Ivan Sato,ivan.sato@example.com,Web app,email,urgent,Tier 2,closed,3.1,10.0
+T-0197,2026-09-08,Zoe Lopez,zoe.lopez@example.com,Web app,chat,urgent,Tier 2,closed,0.5,42.5
+T-0226,2026-09-08,Noah Ivanova,noah.ivanova@example.com,Mobile app,email,normal,Tier 1,closed,11.4,23.1
+T-0277,2026-09-08,Leila Haddad,leila.haddad@example.com,Integrations,email,normal,Tier 1,closed,6.4,54.4
+T-0218,2026-09-09,Mateo Mensah,mateo.mensah@example.com,Web app,chat,normal,Tier 1,closed,2.3,48.6
+T-0260,2026-09-09,Diego Silva,diego.silva@example.com,Integrations,chat,normal,Tier 1,closed,1.1,21.9
+T-0302,2026-09-09,Mateo Mensah,mateo.mensah@example.com,Billing,email,low,Billing ops,closed,9.7,80.5
+T-0187,2026-09-10,Omar Novak,omar.novak@example.com,Integrations,chat,low,Tier 1,closed,1.2,35.5
+T-0203,2026-09-10,Diego Novak,diego.novak@example.com,Mobile app,email,normal,Tier 1,closed,9.8,57.3
+T-0211,2026-09-10,Diego Patel,diego.patel@example.com,Billing,chat,normal,Billing ops,closed,2.3,9.8
+T-0236,2026-09-10,Chen Kim,chen.kim@example.com,Billing,chat,low,Billing ops,closed,4.3,43.1
+T-0247,2026-09-10,Nora Lopez,nora.lopez@example.com,Mobile app,chat,normal,Tier 1,closed,0.6,24.5
+T-0251,2026-09-10,Zoe Kim,zoe.kim@example.com,Mobile app,email,urgent,Tier 2,closed,3.0,5.9
+T-0265,2026-09-10,Noah Silva,noah.silva@example.com,Mobile app,email,low,Tier 1,closed,2.4,36.9
+T-0286,2026-09-10,Elif Patel,elif.patel@example.com,Mobile app,email,high,Tier 2,closed,8.8,41.7
+T-0206,2026-09-11,Nora Brennan,nora.brennan@example.com,Integrations,email,high,Tier 2,closed,4.7,15.3
+T-0273,2026-09-11,Mia Fischer,mia.fischer@example.com,Billing,chat,normal,Billing ops,closed,5.0,81.0
+T-0194,2026-09-12,Ines Okafor,ines.okafor@example.com,Mobile app,chat,low,Tier 1,closed,1.0,36.9
+T-0233,2026-09-12,Chen Mensah,chen.mensah@example.com,Billing,chat,normal,Billing ops,closed,4.0,77.1
+T-0244,2026-09-12,Ravi Kim,ravi.kim@example.com,Mobile app,phone,normal,Tier 1,closed,0.3,13.2
+T-0249,2026-09-12,Diego Brennan,diego.brennan@example.com,Billing,chat,low,Billing ops,closed,2.4,35.3
+T-0298,2026-09-12,Ines Nguyen,ines.nguyen@example.com,Billing,chat,low,Billing ops,closed,2.2,9.1
+T-0193,2026-09-13,Sofia Kim,sofia.kim@example.com,Billing,email,normal,Billing ops,closed,13.8,63.9
+T-0270,2026-09-13,Liam Haddad,liam.haddad@example.com,Billing,email,high,Billing ops,closed,24.7,47.4
+T-0281,2026-09-13,Priya Tanaka,priya.tanaka@example.com,Mobile app,chat,normal,Tier 1,closed,1.3,24.3
+T-0207,2026-09-14,Ravi Tanaka,ravi.tanaka@example.com,Billing,email,high,Billing ops,closed,24.4,66.0
+T-0276,2026-09-14,Priya Patel,priya.patel@example.com,Billing,email,urgent,Billing ops,closed,25.2,87.7
+T-0283,2026-09-14,Lucas Larsen,lucas.larsen@example.com,Billing,email,normal,Billing ops,closed,42.5,45.9
+T-0284,2026-09-14,Ines Rossi,ines.rossi@example.com,Integrations,email,normal,Tier 1,closed,5.2,33.9
+T-0215,2026-09-15,Sofia Rossi,sofia.rossi@example.com,Billing,chat,normal,Billing ops,closed,4.4,46.5
+T-0269,2026-09-15,Mateo Rossi,mateo.rossi@example.com,Mobile app,chat,normal,Tier 1,closed,2.5,11.8
+T-0292,2026-09-15,Yara Ivanova,yara.ivanova@example.com,Web app,chat,low,Tier 1,closed,1.2,35.4
+T-0293,2026-09-15,Priya Silva,priya.silva@example.com,Integrations,chat,high,Tier 2,closed,2.1,30.1
+T-0225,2026-09-16,Ivan Haddad,ivan.haddad@example.com,Web app,email,normal,Tier 1,closed,6.6,39.9
+T-0289,2026-09-16,Mia Cohen,mia.cohen@example.com,Integrations,email,high,Tier 2,closed,7.9,28.6
+T-0296,2026-09-16,Leila Larsen,leila.larsen@example.com,Billing,email,normal,Billing ops,closed,10.3,52.0
+T-0301,2026-09-16,Priya Ivanova,priya.ivanova@example.com,Web app,chat,low,Tier 1,closed,1.7,32.1
+T-0201,2026-09-17,Priya Smith,priya.smith@example.com,Web app,email,low,Tier 1,closed,6.0,38.2
+T-0232,2026-09-17,Mia Mensah,mia.mensah@example.com,Billing,email,low,Billing ops,closed,12.6,79.9
+T-0246,2026-09-17,Lucas Sato,lucas.sato@example.com,Billing,chat,normal,Billing ops,closed,8.7,21.0
+T-0263,2026-09-17,Diego Haddad,diego.haddad@example.com,Integrations,chat,low,Tier 1,closed,0.4,40.6
+T-0268,2026-09-17,Nora Novak,nora.novak@example.com,Mobile app,email,urgent,Tier 2,closed,1.8,46.7
+T-0295,2026-09-17,Elif Okafor,elif.okafor@example.com,Mobile app,email,normal,Tier 1,closed,6.6,29.2
+T-0196,2026-09-18,Kenji Garcia,kenji.garcia@example.com,Billing,email,normal,Billing ops,closed,27.9,32.5
+T-0208,2026-09-18,Mateo Okafor,mateo.okafor@example.com,Web app,email,low,Tier 1,closed,5.0,42.6
+T-0250,2026-09-18,Elif Silva,elif.silva@example.com,Mobile app,phone,normal,Tier 1,closed,0.7,5.7
+T-0267,2026-09-18,Chen Garcia,chen.garcia@example.com,Billing,chat,urgent,Billing ops,closed,1.0,52.6
+T-0291,2026-09-18,Amara Haddad,amara.haddad@example.com,Web app,email,urgent,Tier 2,closed,5.9,32.5
+T-0209,2026-09-19,Mia Larsen,mia.larsen@example.com,Billing,email,normal,Billing ops,closed,38.4,82.7
+T-0248,2026-09-19,Kofi Lopez,kofi.lopez@example.com,Integrations,email,high,Tier 2,closed,6.6,43.3
+T-0259,2026-09-19,Sofia Ivanova,sofia.ivanova@example.com,Billing,email,urgent,Billing ops,closed,4.1,78.6
+T-0240,2026-09-20,Noah Haddad,noah.haddad@example.com,Mobile app,email,low,Tier 1,closed,8.3,25.6
+T-0256,2026-09-20,Zoe Silva,zoe.silva@example.com,Web app,chat,normal,Tier 1,closed,1.6,27.7
+T-0271,2026-09-20,Leila Nguyen,leila.nguyen@example.com,Integrations,chat,high,Tier 2,closed,1.2,30.5
+T-0300,2026-09-20,Kofi Sato,kofi.sato@example.com,Web app,chat,normal,Tier 1,closed,1.0,29.2
+T-0310,2026-09-20,Elif Haddad,elif.haddad@example.com,Billing,phone,normal,Billing ops,closed,4.8,12.0
+T-0192,2026-09-21,Ivan Cohen,ivan.cohen@example.com,Integrations,email,normal,Tier 1,closed,6.5,44.7
+T-0237,2026-09-21,Amara Okafor,amara.okafor@example.com,Billing,email,normal,Billing ops,closed,15.6,50.2
+T-0275,2026-09-21,Nora Okafor,nora.okafor@example.com,Billing,chat,low,Billing ops,closed,2.0,11.0
+T-0285,2026-09-21,Leila Novak,leila.novak@example.com,Billing,chat,high,Billing ops,closed,11.3,53.8
+T-0288,2026-09-21,Noah Garcia,noah.garcia@example.com,Billing,chat,normal,Billing ops,closed,6.1,63.2
+T-0217,2026-09-22,Mateo Brennan,mateo.brennan@example.com,Mobile app,chat,normal,Tier 1,closed,0.9,6.1
+T-0219,2026-09-22,Zoe Lopez,zoe.lopez@example.com,Billing,phone,low,Billing ops,closed,1.4,72.0
+T-0241,2026-09-22,Elif Ivanova,elif.ivanova@example.com,Web app,email,low,Tier 1,closed,2.8,42.9
+T-0191,2026-09-23,Leila Nguyen,leila.nguyen@example.com,Integrations,chat,low,Tier 1,open,1.0,
+T-0229,2026-09-23,Sofia Okafor,sofia.okafor@example.com,Billing,chat,high,Billing ops,closed,4.3,9.1
+T-0261,2026-09-23,Kenji Cohen,kenji.cohen@example.com,Web app,chat,urgent,Tier 2,closed,0.5,25.2
+T-0214,2026-09-24,Ravi Rossi,ravi.rossi@example.com,Integrations,chat,high,Tier 2,open,0.6,
+T-0252,2026-09-24,Sofia Silva,sofia.silva@example.com,Integrations,email,normal,Tier 1,closed,4.2,37.4
+T-0264,2026-09-24,Hana Rossi,hana.rossi@example.com,Billing,email,normal,Billing ops,open,39.0,
+T-0290,2026-09-24,Ava Ivanova,ava.ivanova@example.com,Billing,chat,normal,Billing ops,closed,3.9,18.9
+T-0190,2026-09-25,Ava Nguyen,ava.nguyen@example.com,Billing,chat,normal,Billing ops,closed,1.5,67.5
+T-0199,2026-09-25,Mateo Rossi,mateo.rossi@example.com,Billing,chat,normal,Billing ops,open,2.9,
+T-0212,2026-09-25,Mia Okafor,mia.okafor@example.com,Billing,email,low,Billing ops,closed,41.9,113.2
+T-0238,2026-09-25,Ines Larsen,ines.larsen@example.com,Web app,email,normal,Tier 1,closed,24.0,56.2
+T-0239,2026-09-25,Liam Kim,liam.kim@example.com,Billing,phone,low,Billing ops,closed,2.0,20.7
+T-0204,2026-09-26,Diego Cohen,diego.cohen@example.com,Billing,chat,normal,Billing ops,closed,6.8,32.1
+T-0307,2026-09-26,Tomas Okafor,tomas.okafor@example.com,Mobile app,phone,low,Tier 1,closed,1.4,29.7
+T-0308,2026-09-26,Kenji Silva,kenji.silva@example.com,Mobile app,email,normal,Tier 1,open,8.9,
+T-0253,2026-09-27,Priya Tanaka,priya.tanaka@example.com,Mobile app,chat,normal,Tier 1,closed,1.4,13.2
+T-0255,2026-09-27,Ines Fischer,ines.fischer@example.com,Integrations,chat,normal,Tier 1,closed,1.4,35.2
+T-0210,2026-09-28,Kenji Lopez,kenji.lopez@example.com,Billing,chat,normal,Billing ops,open,4.3,
+T-0220,2026-09-28,Nora Silva,nora.silva@example.com,Billing,email,high,Billing ops,open,34.3,
+T-0227,2026-09-28,Ivan Rossi,ivan.rossi@example.com,Web app,email,normal,Tier 1,closed,12.0,32.0
+T-0242,2026-09-28,Noah Mensah,noah.mensah@example.com,Mobile app,chat,high,Tier 2,open,0.8,
+T-0258,2026-09-28,Priya Mensah,priya.mensah@example.com,Integrations,phone,normal,Tier 1,closed,0.4,28.7
+T-0297,2026-09-28,Hana Novak,hana.novak@example.com,Mobile app,chat,high,Tier 2,open,1.4,
+T-0274,2026-09-29,Leila Novak,leila.novak@example.com,Integrations,email,low,Tier 1,open,5.1,
+T-0299,2026-09-29,Sofia Ivanova,sofia.ivanova@example.com,Billing,chat,urgent,Billing ops,closed,1.1,35.0
+T-0202,2026-09-30,Leila Patel,leila.patel@example.com,Integrations,email,low,Tier 1,closed,8.3,53.9
+T-0205,2026-09-30,Sofia Tanaka,sofia.tanaka@example.com,Billing,chat,low,Billing ops,open,7.1,
+T-0221,2026-09-30,Ines Tanaka,ines.tanaka@example.com,Web app,phone,normal,Tier 1,closed,0.5,35.4
+T-0234,2026-09-30,Ava Rossi,ava.rossi@example.com,Billing,chat,normal,Billing ops,open,5.0,
+T-0257,2026-09-30,Yara Cohen,yara.cohen@example.com,Billing,email,normal,Billing ops,open,25.5,
+T-0279,2026-09-30,Amara Haddad,amara.haddad@example.com,Web app,chat,high,Tier 2,open,0.7,
+T-0287,2026-09-30,Tomas Cohen,tomas.cohen@example.com,Integrations,email,normal,Tier 1,closed,8.3,33.5

@@ -1,0 +1,569 @@
+IP addresses and the cloud project name are redacted in this public transcript.
+Actual Intel TDX / Google Cloud CLI test, 2026-10-21 UTC.
+The incorrect-policy attempt was rejected before launch; the normal attempt exited 0.
+Earlier sections precede the final symbol/label presentation polish.
+
+$ vcontainer run --session shell-demo
+created owner key /tmp/vcontainer-shell-20261021/state/owner.key
+✓ network and firewall ready (51.1s)
+✓ created TDX confidential VM shell-demo: c3-standard-4 in us-central1-a (11.5s)
+✓ shell-demo returned attestation evidence (19.7s)
+
+  vcontainer / verify
+  session shell-demo / <redacted-ip> / us-central1-a
+
+  MACHINE  /  identity & freshness
+  + Intel TDX        signature valid; TCB UpToDate (evaluation 20)
+  + Fresh session    fresh nonce and quoted status Waiting
+  + Google Cloud     Google host/firmware svn 2; instance 5459067770282295702
+
+  BOOT  /  your trusted environment
+  + Measured boot    expected RTMR1 matched; RTMR2 empty
+  + Owner + ledger   ledger replay and owner key match
+  - Signed launch    no launch recorded
+  - Image manifest   no execution manifest recorded
+
+  CHECKS PASSED  5 checks passed / 1.43s
+
+  POLICY <-> QUOTE  /  exact RTMR1 match
+  release    vcontainer-24e25d8234a7
+  expected   a2d14ad3945af6e15eb62c0cae597fbf27060b5671cf9d35
+             bf6af3ca5b6a2f9f12d1111ba312d608db19691166163805
+  attested   a2d14ad3945af6e15eb62c0cae597fbf27060b5671cf9d35
+             bf6af3ca5b6a2f9f12d1111ba312d608db19691166163805
+
+  ATTESTATION VERIFIED
+  state: Waiting - verified VM is ready for a launch
+
+
+session shell-demo is ready. Deploy a container:
+  vcontainer deploy --session shell-demo IMAGE [-p PORT] [--secret NAME=@FILE]
+
+$ vcontainer deploy --session shell-demo docker.io/library/hello-world:latest # incorrect policy; rejected
+
+  VERIFY -> OWNER COMMIT -> PULL & RUN
+  The VM must match your policy before it receives the signed launch.
+
+✓ fresh evidence received (0.2s)
+
+  vcontainer / verify
+  shell-demo / before launch
+
+  MACHINE  /  identity & freshness
+  + Intel TDX        signature valid; TCB UpToDate (evaluation 20)
+  + Fresh session    fresh nonce and quoted status Waiting
+  + Google Cloud     Google host/firmware svn 2; instance 5459067770282295702
+
+  BOOT  /  your trusted environment
+  x Measured boot    FAILED - measured boot does not match your release policy
+
+  BLOCKED  No successful verification result.
+error: deployment stopped before launch; no owner commit was sent: RTMR1 a2d14ad3945af6e15eb62c0cae597fbf27060b5671cf9d35bf6af3ca5b6a2f9f12d1111ba312d608db19691166163805 is not the expected boot image:
+  RTMR1 type 0x80000007 77a0dab2312b4e1e57a84d86… Calling EFI Application from Boot Option
+  RTMR1 type 0x4 394341b7182cd227c5c6b07e… ....
+  RTMR1 type 0x80000006 a6b3142eb73c97296a9354e3… EFI PART....\...6|$....................."..................|
+  RTMR1 type 0x80000003 24e25d8234a76407ff7f2836… ..........K..........................A......................
+  RTMR1 type 0x80000007 214b0bef1379756011344877… Exit Boot Services Invocation
+  RTMR1 type 0x80000007 0a2e01c85deae718a530ad8c… Exit Boot Services Returned with Success
+
+$ vcontainer deploy --session shell-demo docker.io/library/hello-world:latest
+
+  VERIFY -> OWNER COMMIT -> PULL & RUN
+  The VM must match your policy before it receives the signed launch.
+
+✓ fresh evidence received (0.2s)
+
+  vcontainer / verify
+  shell-demo / before launch
+
+  MACHINE  /  identity & freshness
+  + Intel TDX        signature valid; TCB UpToDate (evaluation 20)
+  + Fresh session    fresh nonce and quoted status Waiting
+  + Google Cloud     Google host/firmware svn 2; instance 5459067770282295702
+
+  BOOT  /  your trusted environment
+  + Measured boot    expected RTMR1 matched; RTMR2 empty
+  + Owner + ledger   ledger replay and owner key match
+  - Signed launch    no launch recorded
+  - Image manifest   no execution manifest recorded
+
+  CHECKS PASSED  5 checks passed / 0.78s
+✓ sent the signed launch (1.2s)
+✓ fresh evidence received (0.3s)
+
+  vcontainer / verify
+  shell-demo / launch recorded, pull not authorized
+
+  MACHINE  /  identity & freshness
+  + Intel TDX        signature valid; TCB UpToDate (evaluation 20)
+  + Fresh session    fresh nonce and quoted status Starting
+  + Google Cloud     Google host/firmware svn 2; instance 5459067770282295702
+
+  BOOT  /  your trusted environment
+  + Measured boot    expected RTMR1 matched; RTMR2 empty
+  + Owner + ledger   ledger replay and owner key match
+
+  CONTAINER  /  your requested workload
+  + Signed launch    recorded launch matches policy
+  - Image manifest   no execution manifest recorded
+
+  CHECKS PASSED  6 checks passed / 0.75s
+
+  VERIFY -> OWNER COMMIT -> PULL & RUN
+  Recorded launch matches. The owner can now authorize the image pull.
+
+✓ committed: the VM may pull the image (5.8s)
+✓ container settled; checking final attestation (3.3s)
+
+  vcontainer / verify
+  shell-demo / final state
+
+  MACHINE  /  identity & freshness
+  + Intel TDX        signature valid; TCB UpToDate (evaluation 20)
+  + Fresh session    fresh nonce and quoted status Exited
+  + Google Cloud     Google host/firmware svn 2; instance 5459067770282295702
+
+  BOOT  /  your trusted environment
+  + Measured boot    expected RTMR1 matched; RTMR2 empty
+  + Owner + ledger   ledger replay and owner key match
+
+  CONTAINER  /  your requested workload
+  + Signed launch    recorded launch matches policy
+  + Image manifest   execution manifest recorded
+
+  CHECKS PASSED  7 checks passed / 0.81s
+
+  POLICY <-> QUOTE  /  exact RTMR1 match
+  release    vcontainer-24e25d8234a7
+  expected   a2d14ad3945af6e15eb62c0cae597fbf27060b5671cf9d35
+             bf6af3ca5b6a2f9f12d1111ba312d608db19691166163805
+  attested   a2d14ad3945af6e15eb62c0cae597fbf27060b5671cf9d35
+             bf6af3ca5b6a2f9f12d1111ba312d608db19691166163805
+
+  RECORDED CONTAINER
+  image      docker.io/library/hello-world
+  pinned     sha256:11a3eb1597e864c51b3f56733cb2e8a90bf0c284bfc05f9444d81c558bc848aa
+  manifest   sha256:d1a8d0a4eeb63aff09f5f34d4d80505e0ba81905f36158cc3970d8e07179e59e
+  config     env=[] secrets={}
+
+  ATTESTATION VERIFIED
+  state: Exited - exit code 0
+
+$ vcontainer logs --session shell-demo
+[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01HBdsDxe: loading Boot0001 "UEFI nvme_card-pd" from PciRoot(0x0)/Pci(0x4,0x0)/NVMe(0x1,00-00-00-00-00-00-00-00)
+BdsDxe: starting Boot0001 "UEFI nvme_card-pd" from PciRoot(0x0)/Pci(0x4,0x0)/NVMe(0x1,00-00-00-00-00-00-00-00)
+
+UEFI: Attempting to start image.
+Description: UEFI nvme_card-pd
+FilePath: PciRoot(0x0)/Pci(0x4,0x0)/NVMe(0x1,00-00-00-00-00-00-00-00)
+OptionNumber: 1.
+
+[    0.000000] tdx: Guest detected
+[    0.000000] tdx: Attributes: SEPT_VE_DISABLE
+[    0.000000] tdx: TD_CTLS: PENDING_VE_DISABLE ENUM_TOPOLOGY VIRT_CPUID2 REDUCE_VE
+[    0.000000] Linux version 6.18.57-vcontainer (vcontainer@vcontainer) (gcc (Debian 14.2.0-19) 14.2.0, GNU ld (GNU Binutils for Debian) 2.44) #1 SMP 2026-01-01 00:00:00 UTC
+[    0.000000] Command line:
+[    0.000000] BIOS-provided physical RAM map:
+[    0.000000] BIOS-e820: [mem 0x0000000000000000-0x000000000080bfff] usable
+[    0.000000] BIOS-e820: [mem 0x000000000080c000-0x000000000080cfff] ACPI NVS
+[    0.000000] BIOS-e820: [mem 0x000000000080d000-0x00000000015fffff] usable
+[    0.000000] BIOS-e820: [mem 0x0000000001600000-0x000000000161ffff] reserved
+[    0.000000] BIOS-e820: [mem 0x0000000001620000-0x00000000bd46bfff] usable
+[    0.000000] BIOS-e820: [mem 0x00000000bd46c000-0x00000000bd472fff] ACPI data
+[    0.000000] BIOS-e820: [mem 0x00000000bd473000-0x00000000bf2ecfff] usable
+[    0.000000] BIOS-e820: [mem 0x00000000bf2ed000-0x00000000bf4ecfff] reserved
+[    0.000000] BIOS-e820: [mem 0x00000000bf4ed000-0x00000000bf56ffff] usable
+[    0.000000] BIOS-e820: [mem 0x00000000bf570000-0x00000000bf57efff] ACPI data
+[    0.000000] BIOS-e820: [mem 0x00000000bf57f000-0x00000000bf5fefff] ACPI NVS
+[    0.000000] BIOS-e820: [mem 0x00000000bf5ff000-0x00000000bffdffff] usable
+[    0.000000] BIOS-e820: [mem 0x00000000bffe0000-0x00000000bfffffff] reserved
+[    0.000000] BIOS-e820: [mem 0x00000000ffe00000-0x000000043fffffff] usable
+[    0.000000] NX (Execute Disable) protection: active
+[    0.000000] APIC: Static calls initialized
+[    0.000000] efi: EFI v2.7 by EDK II
+[    0.000000] efi: CCFinalLog=0xbf5b7000 ACPI=0xbf57e000 ACPI 2.0=0xbf57e014 TPMFinalLog=0xbf5af000 SMBIOS=0xbf3ca000 MEMATTR=0xbd475018 TPMEventLog=0xbd46c018
+[    0.000000] Hypervisor detected: KVM
+[    0.000000] last_pfn = 0x100000 max_arch_pfn = 0x10000000000
+[    0.000000] tsc: Detected 2700.000 MHz processor
+[    0.000014] last_pfn = 0x440000 max_arch_pfn = 0x10000000000
+[    0.000016] x86/PAT: PAT support disabled because CONFIG_X86_PAT is disabled in the kernel.
+[    0.000017] x86/PAT: Configuration [0-7]: WB  WT  UC- UC  WB  WT  UC- UC
+[    0.000032] x2apic: enabled by BIOS, switching to x2apic ops
+[    0.000049] last_pfn = 0x100000 max_arch_pfn = 0x10000000000
+[    0.000055] software IO TLB: SWIOTLB bounce buffer size adjusted to 982MB
+[    0.000061] Using GB pages for direct mapping
+[    0.000920] Secure boot disabled
+[    0.000921] ACPI: Early table checksum verification disabled
+[    0.000924] ACPI: RSDP 0x00000000BF57E014 000024 (v02 Google)
+[    0.000928] ACPI: XSDT 0x00000000BF57D0E8 000064 (v01 Google GOOGFACP 00000001      01000013)
+[    0.000934] ACPI: FACP 0x00000000BF577000 0000F4 (v02 Google GOOGFACP 00000001 GOOG 00000001)
+[    0.000939] ACPI: DSDT 0x00000000BF578000 001A93 (v01 Google GOOGDSDT 00000001 GOOG 00000001)
+[    0.000942] ACPI: FACS 0x00000000BF5AA000 000040
+[    0.000945] ACPI: CCEL 0x00000000BF57C000 000038 (v01 INTEL  EDK2     00000002      01000013)
+[    0.000947] ACPI: SSDT 0x00000000BF57B000 000316 (v02 GOOGLE Tpm2Tabl 00001000 INTL 20250807)
+[    0.000950] ACPI: TPM2 0x00000000BF57A000 000034 (v04 GOOGLE          00000001 GOOG 00000001)
+[    0.000953] ACPI: SRAT 0x00000000BF576000 0000E8 (v03 Google GOOGSRAT 00000001 GOOG 00000001)
+[    0.000956] ACPI: SSDT 0x00000000BF574000 000A42 (v01 Google GOOGSSDT 00000001 GOOG 00000001)
+[    0.000958] ACPI: WAET 0x00000000BF573000 000028 (v01 Google GOOGWAET 00000001 GOOG 00000001)
+[    0.000961] ACPI: APIC 0x00000000BF572000 000096 (v05 Google GOOGAPIC 00000001 GOOG 00000001)
+[    0.000963] ACPI: Reserving FACP table memory at [mem 0xbf577000-0xbf5770f3]
+[    0.000964] ACPI: Reserving DSDT table memory at [mem 0xbf578000-0xbf579a92]
+[    0.000965] ACPI: Reserving FACS table memory at [mem 0xbf5aa000-0xbf5aa03f]
+[    0.000966] ACPI: Reserving CCEL table memory at [mem 0xbf57c000-0xbf57c037]
+[    0.000967] ACPI: Reserving SSDT table memory at [mem 0xbf57b000-0xbf57b315]
+[    0.000967] ACPI: Reserving TPM2 table memory at [mem 0xbf57a000-0xbf57a033]
+[    0.000968] ACPI: Reserving SRAT table memory at [mem 0xbf576000-0xbf5760e7]
+[    0.000969] ACPI: Reserving SSDT table memory at [mem 0xbf574000-0xbf574a41]
+[    0.000970] ACPI: Reserving WAET table memory at [mem 0xbf573000-0xbf573027]
+[    0.000970] ACPI: Reserving APIC table memory at [mem 0xbf572000-0xbf572095]
+[    0.001044] APIC: Switched APIC routing to: cluster x2apic
+[    0.001196] Zone ranges:
+[    0.001196]   DMA32    [mem 0x0000000000001000-0x00000000ffffffff]
+[    0.001198]   Normal   [mem 0x0000000100000000-0x000000043fffffff]
+[    0.001200] Movable zone start for each node
+[    0.001201] Early memory node ranges
+[    0.001201]   node   0: [mem 0x0000000000001000-0x000000000009ffff]
+[    0.001202]   node   0: [mem 0x0000000000100000-0x000000000080bfff]
+[    0.001203]   node   0: [mem 0x000000000080d000-0x00000000015fffff]
+[    0.001204]   node   0: [mem 0x0000000001620000-0x00000000bd46bfff]
+[    0.001205]   node   0: [mem 0x00000000bd473000-0x00000000bf2ecfff]
+[    0.001206]   node   0: [mem 0x00000000bf4ed000-0x00000000bf56ffff]
+[    0.001207]   node   0: [mem 0x00000000bf5ff000-0x00000000bffdffff]
+[    0.001207]   node   0: [mem 0x00000000ffe00000-0x000000043fffffff]
+[    0.001210] Initmem setup node 0 [mem 0x0000000000001000-0x000000043fffffff]
+[    0.001216] On node 0, zone DMA32: 1 pages in unavailable ranges
+[    0.001238] On node 0, zone DMA32: 96 pages in unavailable ranges
+[    0.001279] On node 0, zone DMA32: 1 pages in unavailable ranges
+[    0.010086] On node 0, zone DMA32: 32 pages in unavailable ranges
+[    0.010178] On node 0, zone DMA32: 7 pages in unavailable ranges
+[    0.010186] On node 0, zone DMA32: 512 pages in unavailable ranges
+[    0.010218] On node 0, zone DMA32: 143 pages in unavailable ranges
+[    0.010624] On node 0, zone DMA32: 32288 pages in unavailable ranges
+[    0.050808] ACPI: LAPIC_NMI (acpi_id[0xff] dfl dfl lint[0x1])
+[    0.050957] IOAPIC[0]: apic_id 0, version 17, address 0xfec00000, GSI 0-23
+[    0.050961] ACPI: INT_SRC_OVR (bus 0 bus_irq 5 global_irq 5 high level)
+[    0.050963] ACPI: INT_SRC_OVR (bus 0 bus_irq 9 global_irq 9 high level)
+[    0.050964] ACPI: INT_SRC_OVR (bus 0 bus_irq 10 global_irq 10 high level)
+[    0.050965] ACPI: INT_SRC_OVR (bus 0 bus_irq 11 global_irq 11 high level)
+[    0.050969] APIC: wakeup_secondary_cpu_64() replaced with acpi_wakeup_cpu()
+[    0.050975] ACPI: Using ACPI (MADT) for SMP configuration information
+[    0.050980] CPU topo: Max. logical packages:   1
+[    0.050981] CPU topo: Max. logical dies:       1
+[    0.050982] CPU topo: Max. dies per package:   1
+[    0.050986] CPU topo: Max. threads per core:   2
+[    0.050987] CPU topo: Num. cores per package:     2
+[    0.050988] CPU topo: Num. threads per package:   4
+[    0.050988] CPU topo: Allowing 4 present CPUs plus 0 hotplug CPUs
+[    0.051061] [mem 0xc0000000-0xffdfffff] available for PCI devices
+[    0.051062] Booting paravirtualized kernel on KVM
+[    0.051064] clocksource: refined-jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645519600211568 ns
+[    0.052996] setup_percpu: NR_CPUS:256 nr_cpumask_bits:4 nr_cpu_ids:4 nr_node_ids:1
+[    0.053273] percpu: Embedded 36 pages/cpu s118360 r0 d29096 u524288
+[    0.053315] Kernel command line: console=ttyS0 noinitrd panic=-1 efi=noruntime random.trust_bootloader=off ip=dhcp
+[    0.053357] random: crng init done
+[    0.053358] printk: log buffer data + meta data: 131072 + 458752 = 589824 bytes
+[    0.055398] Dentry cache hash table entries: 2097152 (order: 12, 16777216 bytes, linear)
+[    0.056437] Inode-cache hash table entries: 1048576 (order: 11, 8388608 bytes, linear)
+[    0.056509] software IO TLB: area num 4.
+[    0.056510] software IO TLB: SWIOTLB bounce buffer size roundup to 1024MB
+[    0.315958] Built 1 zonelists, mobility grouping on.  Total pages: 4193992
+[    0.315961] mem auto-init: stack:all(zero), heap alloc:off, heap free:off
+[    0.347975] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=4, Nodes=1
+[    0.348046] rcu: Hierarchical RCU implementation.
+[    0.348047] rcu: RCU restricting CPUs from NR_CPUS=256 to nr_cpu_ids=4.
+[    0.348049] rcu: RCU calculated value of scheduler-enlistment delay is 25 jiffies.
+[    0.348050] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=4
+[    0.348061] NR_IRQS: 16640, nr_irqs: 456, preallocated irqs: 16
+[    0.348416] rcu: srcu_init: Setting srcu_struct sizes based on contention.
+[    0.348717] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns
+[    0.348861] printk: legacy console [ttyS0] enabled
+[    0.741011] ACPI: Core revision 20250807
+[    0.743081] ACPI BIOS Warning (bug): Incorrect checksum in table [APIC] - 0xDC, should be 0x17 (20250807/utcksum-58)
+[    0.748533] APIC: Switch to symmetric I/O mode setup
+[    0.756497] APIC: Switched APIC routing to: physical x2apic
+[    0.767566] clocksource: tsc-early: mask: 0xffffffffffffffff max_cycles: 0x26eb3e3cc63, max_idle_ns: 440795236593 ns
+[    0.772887] Calibrating delay loop (skipped), value calculated using timer frequency.. 5400.00 BogoMIPS (lpj=10800000)
+[    0.776886] x86/cpu: User Mode Instruction Prevention (UMIP) activated
+[    0.776886] Last level iTLB entries: 4KB 0, 2MB 0, 4MB 0
+[    0.776886] Last level dTLB entries: 4KB 0, 2MB 0, 4MB 0, 1GB 0
+[    0.776886] process: using TDX aware idle routine
+[    0.776886] mitigations: Enabled attack vectors: user_kernel, user_user, SMT mitigations: auto
+[    0.776886] Speculative Store Bypass: Mitigation: Speculative Store Bypass disabled via prctl
+[    0.776886] Spectre V2 : Mitigation: Enhanced / Automatic IBRS
+[    0.776886] Spectre V1 : Mitigation: usercopy/swapgs barriers and __user pointer sanitization
+[    0.776886] Spectre V2 : Spectre v2 / PBRSB-eIBRS: Retire a single CALL on VMEXIT
+[    0.776886] Spectre V2 : mitigation: Enabling conditional Indirect Branch Prediction Barrier
+[    0.776886] x86/fpu: Supporting XSAVE feature 0x001: 'x87 floating point registers'
+[    0.776886] x86/fpu: Supporting XSAVE feature 0x002: 'SSE registers'
+[    0.776886] x86/fpu: Supporting XSAVE feature 0x004: 'AVX registers'
+[    0.776886] x86/fpu: Supporting XSAVE feature 0x020: 'AVX-512 opmask'
+[    0.776886] x86/fpu: Supporting XSAVE feature 0x040: 'AVX-512 Hi256'
+[    0.776886] x86/fpu: Supporting XSAVE feature 0x080: 'AVX-512 ZMM_Hi256'
+[    0.776886] x86/fpu: Supporting XSAVE feature 0x20000: 'AMX Tile config'
+[    0.776886] x86/fpu: Supporting XSAVE feature 0x40000: 'AMX Tile data'
+[    0.776886] x86/fpu: xstate_offset[2]:  576, xstate_sizes[2]:  256
+[    0.776886] x86/fpu: xstate_offset[5]:  832, xstate_sizes[5]:   64
+[    0.776886] x86/fpu: xstate_offset[6]:  896, xstate_sizes[6]:  512
+[    0.776886] x86/fpu: xstate_offset[7]: 1408, xstate_sizes[7]: 1024
+[    0.776886] x86/fpu: xstate_offset[17]: 2432, xstate_sizes[17]:   64
+[    0.776886] x86/fpu: xstate_offset[18]: 2496, xstate_sizes[18]: 8192
+[    0.776886] x86/fpu: Enabled xstate features 0x600e7, context size is 10688 bytes, using 'compacted' format.
+[    0.776886] Freeing SMP alternatives memory: 20K
+[    0.776886] Memory Encryption Features active: Intel TDX
+[    0.776886] pid_max: default: 32768 minimum: 301
+[    0.776886] Mount-cache hash table entries: 32768 (order: 6, 262144 bytes, linear)
+[    0.776886] Mountpoint-cache hash table entries: 32768 (order: 6, 262144 bytes, linear)
+[    0.776886] smpboot: CPU0: Intel TDX (family: 0x6, model: 0x8f, stepping: 0x8)
+[    0.776886] Performance Events: unsupported CPU family 6 model 143 no PMU driver, software events only.
+[    0.776917] signal: max sigframe size: 11536
+[    0.780925] rcu: Hierarchical SRCU implementation.
+[    0.784888] rcu: Max phase no-delay instances is 1000.
+[    0.788967] smp: Bringing up secondary CPUs ...
+[    0.792887] smpboot: Parallel CPU startup disabled by the platform
+[    0.796949] smpboot: x86: Booting SMP configuration:
+[    0.800889] .... node  #0, CPUs:      #1 #2 #3
+[    0.802669] smp: Brought up 1 node, 4 CPUs
+[    0.808888] smpboot: Total of 4 processors activated (21600.00 BogoMIPS)
+[    0.813098] Memory: 15401408K/16775968K available (6264K kernel code, 725K rwdata, 1300K rodata, 3588K init, 2288K bss, 1370420K reserved, 0K cma-reserved)
+[    0.817275] devtmpfs: initialized
+[    0.821107] posixtimers hash table entries: 2048 (order: 3, 32768 bytes, linear)
+[    0.824913] futex hash table entries: 1024 (65536 bytes on 1 NUMA nodes, total 64 KiB, linear).
+[    0.828920] NET: Registered PF_NETLINK/PF_ROUTE protocol family
+[    0.833061] PCI: Using configuration type 1 for base access
+[    0.841009] ACPI: Added _OSI(Module Device)
+[    0.844888] ACPI: Added _OSI(Processor Device)
+[    0.848887] ACPI: Added _OSI(Processor Aggregator Device)
+[    0.853427] ACPI: 3 ACPI AML tables successfully acquired and loaded
+[    0.858094] ACPI: Interpreter enabled
+[    0.860890] ACPI: PM: (supports S0 S5)
+[    0.864888] ACPI: Using IOAPIC for interrupt routing
+[    0.868892] PCI: Using host bridge windows from ACPI; if necessary, use "pci=nocrs" and report a bug
+[    0.872888] PCI: Using E820 reservations for host bridge windows
+[    0.877282] ACPI: Enabled 16 GPEs in block 00 to 0F
+[    0.882718] ACPI: PCI Root Bridge [PCI0] (domain 0000 [bus 00-ff])
+[    0.884889] acpi PNP0A03:00: _OSC: OS supports [Segments MSI HPX-Type3]
+[    0.888887] acpi PNP0A03:00: PCIe port services disabled; not requesting _OSC control
+[    0.892988] PCI host bridge to bus 0000:00
+[    0.896888] pci_bus 0000:00: root bus resource [io  0x0000-0x0cf7 window]
+[    0.900888] pci_bus 0000:00: root bus resource [io  0x0d00-0xffff window]
+[    0.904887] pci_bus 0000:00: root bus resource [mem 0x000a0000-0x000bffff window]
+[    0.908888] pci_bus 0000:00: root bus resource [mem 0xc0000000-0xfebfefff window]
+[    0.912887] pci_bus 0000:00: root bus resource [bus 00-ff]
+[    0.916985] pci 0000:00:00.0: [8086:1237] type 00 class 0x060000 conventional PCI endpoint
+[    0.925217] pci 0000:00:01.0: [8086:7110] type 00 class 0x060100 conventional PCI endpoint
+[    0.930331] pci 0000:00:01.3: [8086:7113] type 00 class 0x068000 conventional PCI endpoint
+[    0.941639] pci 0000:00:03.0: [1ae0:0042] type 00 class 0x020000 conventional PCI endpoint
+[    0.952917] pci 0000:00:03.0: BAR 0 [mem 0xc0202000-0xc0202fff]
+[    0.956910] pci 0000:00:03.0: BAR 1 [mem 0xc0200000-0xc02000ff]
+[    0.960911] pci 0000:00:03.0: BAR 2 [mem 0xc0100000-0xc01fffff]
+[    0.965808] pci 0000:00:04.0: [1ae0:001f] type 00 class 0x010802 conventional PCI endpoint
+[    0.976965] pci 0000:00:04.0: BAR 0 [mem 0xc0000000-0xc0003fff 64bit]
+[    0.980953] pci 0000:00:04.0: BAR 4 [mem 0xc0201000-0xc020103f]
+[    0.988927] ACPI: PCI: Interrupt link LNKA configured for IRQ 10
+[    0.996961] ACPI: PCI: Interrupt link LNKB configured for IRQ 10
+[    1.004959] ACPI: PCI: Interrupt link LNKC configured for IRQ 11
+[    1.012958] ACPI: PCI: Interrupt link LNKD configured for IRQ 11
+[    1.020899] ACPI: PCI: Interrupt link LNKS configured for IRQ 9
+[    1.025423] PCI: Using ACPI for IRQ routing
+[    1.029196] clocksource: Switched to clocksource tsc-early
+[    1.034600] pnp: PnP ACPI init
+[    1.038201] pnp: PnP ACPI: found 6 devices
+[    1.042785] NET: Registered PF_INET protocol family
+[    1.048084] IP idents hash table entries: 262144 (order: 9, 2097152 bytes, linear)
+[    1.058024] tcp_listen_portaddr_hash hash table entries: 8192 (order: 5, 131072 bytes, linear)
+[    1.067152] Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)
+[    1.075047] TCP established hash table entries: 131072 (order: 8, 1048576 bytes, linear)
+[    1.083416] TCP bind hash table entries: 65536 (order: 9, 2097152 bytes, linear)
+[    1.091215] TCP: Hash tables configured (established 131072 bind 65536)
+[    1.098021] UDP hash table entries: 8192 (order: 7, 524288 bytes, linear)
+[    1.105032] UDP-Lite hash table entries: 8192 (order: 7, 524288 bytes, linear)
+[    1.112486] NET: Registered PF_UNIX/PF_LOCAL protocol family
+[    1.118306] pci_bus 0000:00: resource 4 [io  0x0000-0x0cf7 window]
+[    1.124640] pci_bus 0000:00: resource 5 [io  0x0d00-0xffff window]
+[    1.130974] pci_bus 0000:00: resource 6 [mem 0x000a0000-0x000bffff window]
+[    1.137997] pci_bus 0000:00: resource 7 [mem 0xc0000000-0xfebfefff window]
+[    1.145048] PCI-DMA: Using software bounce buffering for IO (SWIOTLB)
+[    1.151646] software IO TLB: mapped [mem 0x000000007d46c000-0x00000000bd46c000] (1024MB)
+[    1.160938] clocksource: tsc: mask: 0xffffffffffffffff max_cycles: 0x26eb3e3cc63, max_idle_ns: 440795236593 ns
+[    1.171152] clocksource: Switched to clocksource tsc
+[    1.176458] workingset: timestamp_bits=62 max_order=22 bucket_order=0
+[    1.183272] Serial: 8250/16550 driver, 4 ports, IRQ sharing disabled
+[    1.190033] serial8250: ttyS0 at I/O 0x3f8 (irq = 4, base_baud = 115200) is a 16550A
+[    1.198218] serial8250: ttyS1 at I/O 0x2f8 (irq = 3, base_baud = 115200) is a 16550A
+[    1.206394] serial8250: ttyS2 at I/O 0x3e8 (irq = 4, base_baud = 115200) is a 16550A
+[    1.214610] serial8250: ttyS3 at I/O 0x2e8 (irq = 3, base_baud = 115200) is a 16550A
+[    1.233649] ACPI: \_SB_.LNKC: Enabled at IRQ 11
+[    1.267536] gve 0000:00:03.0: Driver is running with DQO RDA queue format.
+[    1.274567] gve 0000:00:03.0: MAC addr: 42:01:0a:80:00:02
+[    1.280119] gve 0000:00:03.0: BUFFER SIZES device option enabled with max_rx_buffer_size of 4096, header_buf_size of 128.
+[    1.291218] gve 0000:00:03.0: FLOW STEERING device option enabled with max rule limit of 20000.
+[    1.300092] gve 0000:00:03.0: TX queues 4, RX queues 4
+[    1.305376] gve 0000:00:03.0: Max TX queues 4, Max RX queues 4
+[    1.320155] gve 0000:00:03.0: GVE version 1.0.0
+[    1.324849] gve 0000:00:03.0: GVE queue format 3
+[    1.340939] mce: Unable to init MCE device (rc: -5)
+[    1.345981] IPI shorthand broadcast: enabled
+[    1.350681] sched_clock: Marking stable (926222408, 424170523)->(8569040153, -7218647222)
+[    1.393089] software IO TLB: Memory encryption is active and system is using DMA bounce buffers
+[    1.418651] gve 0000:00:03.0 eth0: Device link is up.
+[    1.444212] Sending DHCP requests ., OK
+[    1.468273] IP-Config: Got DHCP answer from <redacted-ip>, my address is <redacted-ip>
+[    1.475834] IP-Config: Guessing netmask <redacted-ip>
+[    1.480689] IP-Config: Complete:
+[    1.484054]      device=eth0, hwaddr=42:01:0a:80:00:02, ipaddr=<redacted-ip>, mask=<redacted-ip>, gw=<redacted-ip>
+[    1.493677]      host=shell-demo.us-central1-a.c.<redacted-project>.internal, domain=us-central1-a.c.<redacted-project>.internal., nis-domain=(none)
+[    1.506080]      bootserver=<redacted-ip>, rootserver=<redacted-ip>, rootpath=, mtu=1460
+[    1.506082]      nameserver0=<redacted-ip>
+[    1.518215]      ntpserver0=<redacted-ip>
+[    1.524104] Freeing unused kernel image (initmem) memory: 3588K
+[    1.525120] Write protecting the kernel read-only data: 10240k
+[    1.526848] Freeing unused kernel image (text/rodata gap) memory: 1924K
+[    1.528148] Freeing unused kernel image (rodata/data gap) memory: 748K
+[    1.529202] Run /init as init process
+vcontainer: network: eth0 via <redacted-ip>
+vcontainer: waiting for launch on :7700 (boot 469904b170b76c408e3062c09fd350db)
+vcontainer: launch measured; waiting for commit
+vcontainer: pulling docker.io/library/hello-world@sha256:11a3eb1597e864c51b3f56733cb2e8a90bf0c284bfc05f9444d81c558bc848aa
+vcontainer: layer 1/1 sha256:4f55086f7dd096d48b0e49be066971a8ed996521c2e190aa21b2435a847198b4 (2415 bytes)
+
+Hello from Docker!
+This message shows that your installation appears to be working correctly.
+
+To generate this message, Docker took the following steps:
+ 1. The Docker client contacted the Docker daemon.
+ 2. The Docker daemon pulled the "hello-world" image from the Docker Hub.
+    (amd64)
+ 3. The Docker daemon created a new container from that image which runs the
+    executable that produces the output you are currently reading.
+ 4. The Docker daemon streamed that output to the Docker client, which sent it
+    to your terminal.
+
+To try something more ambitious, you can run an Ubuntu container with:
+ $ docker run -it ubuntu bash
+
+Share images, automate workflows, and more with a free Docker ID:
+ https://hub.docker.com/
+
+For more examples and ideas, visit:
+ https://docs.docker.com/get-started/
+
+vcontainer: container started: /hello
+vcontainer: container exited with 0
+
+$ vcontainer verify --session shell-demo --export-policy shell-demo-policy.json
+✓ fresh evidence received (0.3s)
+
+  vcontainer / verify
+  shell-demo
+
+  MACHINE  /  identity & freshness
+  + Intel TDX        signature valid; TCB UpToDate (evaluation 20)
+  + Fresh session    fresh nonce and quoted status Exited
+  + Google Cloud     Google host/firmware svn 2; instance 5459067770282295702
+
+  BOOT  /  your trusted environment
+  + Measured boot    expected RTMR1 matched; RTMR2 empty
+  + Owner + ledger   ledger replay and owner key match
+
+  CONTAINER  /  your requested workload
+  + Signed launch    recorded launch matches policy
+  + Image manifest   execution manifest recorded
+
+  CHECKS PASSED  7 checks passed / 0.79s
+
+  POLICY <-> QUOTE  /  exact RTMR1 match
+  release    vcontainer-24e25d8234a7
+  expected   a2d14ad3945af6e15eb62c0cae597fbf27060b5671cf9d35
+             bf6af3ca5b6a2f9f12d1111ba312d608db19691166163805
+  attested   a2d14ad3945af6e15eb62c0cae597fbf27060b5671cf9d35
+             bf6af3ca5b6a2f9f12d1111ba312d608db19691166163805
+
+  RECORDED CONTAINER
+  image      docker.io/library/hello-world
+  pinned     sha256:11a3eb1597e864c51b3f56733cb2e8a90bf0c284bfc05f9444d81c558bc848aa
+  manifest   sha256:d1a8d0a4eeb63aff09f5f34d4d80505e0ba81905f36158cc3970d8e07179e59e
+  config     env=[] secrets={}
+
+  ATTESTATION VERIFIED
+  state: Exited - exit code 0
+
+policy written to /tmp/vcontainer-shell-20261021/shell-demo-policy.json (give it to anyone who should verify this session)
+
+$ vcontainer verify --session shell-demo # final presentation after screenshot review
+✓ fresh evidence received (0.3s)
+
+  vcontainer / verify
+  shell-demo
+
+  MACHINE  /  identity & freshness
+  ✓ Intel TDX        signature valid; TCB UpToDate (evaluation 20)
+  ✓ Fresh session    fresh nonce and quoted status Exited
+  ✓ Google Cloud     Google host/firmware svn 2; instance 5459067770282295702
+
+  BOOT  /  your trusted environment
+  ✓ Measured boot    expected RTMR1 matched; RTMR2 empty
+  ✓ Owner + ledger   ledger replay and owner key match
+
+  CONTAINER  /  your requested workload
+  ✓ Signed launch    recorded launch matches policy
+  ✓ Image manifest   execution manifest recorded
+
+  CHECKS PASSED  7 checks passed / 0.78s
+
+  BOOT MEASUREMENT  /  all 48 bytes match
+  release    vcontainer-24e25d8234a7
+  policy     a2d14ad3945af6e15eb62c0cae597fbf27060b5671cf9d35
+             bf6af3ca5b6a2f9f12d1111ba312d608db19691166163805
+  quote      a2d14ad3945af6e15eb62c0cae597fbf27060b5671cf9d35
+             bf6af3ca5b6a2f9f12d1111ba312d608db19691166163805
+
+  RECORDED CONTAINER
+  image      docker.io/library/hello-world
+  pinned     sha256:11a3eb1597e864c51b3f56733cb2e8a90bf0c284bfc05f9444d81c558bc848aa
+  manifest   sha256:d1a8d0a4eeb63aff09f5f34d4d80505e0ba81905f36158cc3970d8e07179e59e
+  config     env=[] secrets={}
+
+  ATTESTATION VERIFIED
+  state: Exited - exit code 0
+
+Connection to <redacted-ip> closed.
+
+
+Latest structured terminal presentation (actual verifier replay on saved signed evidence; no live VM):
+
+
+  vcontainer / verify
+  shell-demo / recorded TDX attestation
+  +--------------------+     +--------------------+     +--------------------+
+  |      MACHINE       |     |        BOOT        |     |     CONTAINER      |
+  |   Intel + Google   | --> |    your release    | --> |   signed launch    |
+  |      Verified      |     |      Verified      |     |      Verified      |
+  +--------------------+     +--------------------+     +--------------------+
+
+  ✓ Intel TDX         signature valid; TCB UpToDate (evaluation 20)
+  ✓ Fresh session     fresh nonce and quoted status Exited
+  ✓ Google Cloud      Google host/firmware svn 2; instance 5459067770282295702
+  ✓ Measured boot     expected RTMR1 matched; RTMR2 empty
+  ✓ Owner + ledger    ledger replay and owner key match
+  ✓ Signed launch     recorded launch matches policy
+  ✓ Image manifest    execution manifest recorded
+
+  CHECKS PASSED  7 checks passed / 1.56s
+
+  BOOT MEASUREMENT  /  all 48 bytes match
+  release    vcontainer-24e25d8234a7
+  policy     a2d14ad3945af6e15eb62c0cae597fbf27060b5671cf9d35
+             bf6af3ca5b6a2f9f12d1111ba312d608db19691166163805
+  quote      a2d14ad3945af6e15eb62c0cae597fbf27060b5671cf9d35
+             bf6af3ca5b6a2f9f12d1111ba312d608db19691166163805
+
+  RECORDED CONTAINER
+  image      docker.io/library/hello-world
+  pinned     sha256:11a3eb1597e864c51b3f56733cb2e8a90bf0c284bfc05f9444d81c558b
+             c848aa
+  manifest   sha256:d1a8d0a4eeb63aff09f5f34d4d80505e0ba81905f36158cc3970d8e071
+             79e59e
+  config     env=[] secrets={}
+
+  ATTESTATION VERIFIED
+  state: Exited - exit code 0

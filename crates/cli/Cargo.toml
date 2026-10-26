@@ -1,0 +1,22 @@
+[package]
+name = "vcontainer"
+description = "Run containers in verified Intel TDX confidential VMs on Google Cloud"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vcontainer-core.workspace = true
+anyhow.workspace = true
+authenticode = { version = "0.6", features = ["object"] }
+libc.workspace = true
+clap = { version = "4", features = ["derive"] }
+dcap-qvl = "=0.7.0"
+object = { version = "0.39", default-features = false, features = ["pe", "read_core", "unaligned"] }
+rsa = "0.9"
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio = { version = "1", features = ["rt"] }
+ureq.workspace = true
+x509-cert = "0.2"

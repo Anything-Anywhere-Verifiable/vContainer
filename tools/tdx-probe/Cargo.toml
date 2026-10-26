@@ -1,0 +1,18 @@
+[package]
+name = "tdx-probe"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "M0 probe: runs as /init on a GCE TDX VM and prints what it finds"
+
+# No dependencies: std plus a few libc symbols declared by hand (src/sys.rs).
+[dependencies]
+
+# Standalone: not a member of the repo's root workspace.
+[workspace]
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
